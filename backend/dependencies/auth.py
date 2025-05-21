@@ -1,45 +1,42 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-import requests
-import os
+from pydantic import BaseModel
+from application.config import get_settings
 
-#set up bearer token authentication scheme, HTTPBearer() looks for tokens in the "Authoriation" header
 security = HTTPBearer()
+settings = get_settings()
 
-# extract the jwt from the header
-async def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+
+class Auth0User(BaseModel):
+    sub: str
+    email: str
+    name: str
+
+async def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Auth0User:
     try:
-        token = credentials.credentials #get the raw token string from header
-        # get keys
-        jwks_url = f"https://{os.getenv('AUTH0_DOMAIN')}/.well-known/jwks.json" #JWKS (JSON Web Key Sets) rae a collection of public cryptographic keys used to verify JSON Web Tokens, Auth0 exposes these keys at this endpoint
-        jwks = requests.get(jwks_url).json() # JSON object containing public keys from that endpoint
+        token = credentials.credentials
+        jwks_url = f"https://{settings.auth0_domain}/.well-known/jwks.json"
+        jwks_client = jwt.PyJWKClient(jwks_url)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
         
-        header = jwt.get_unverified_header(token)
-        rsa_key = {}
-        for key in jwks["keys"]:
-            if key["kid"] == header["kid"]:
-                rsa_key = {
-                    "kty": key["kty"], # KEY TYPE
-                    "kid": key["kid"], # KEY ID
-                    "use": key["use"], # Usage
-                    "n": key["n"],     # Modulus
-                    "e": key["e"]      # Exponent
-                }
-                
-        if not rsa_key:
-            raise HTTPException(status_code=401, detail="Invalid token header")
-            
         payload = jwt.decode(
             token,
-            rsa_key,
+            signing_key.key,
             algorithms=["RS256"],
-            audience=os.getenv("AUTH0_AUDIENCE"),
-            issuer=f"https://{os.getenv('AUTH0_DOMAIN')}/"
+            audience=settings.auth0_api_audience,
+            issuer=settings.auth0_domain
         )
-        return payload
+        return Auth0User(
+            sub=payload.get("sub"),
+            email=payload.get("email"),
+            name=payload.get("name")
+        )
     except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+        )
     
 
 """
