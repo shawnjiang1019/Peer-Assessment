@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 export default function Page({
   params,
 }: {
@@ -12,4 +14,21 @@ export default function Page({
       <h2>Session ID: {params.session}</h2>
     </div>
   )
+}
+
+
+interface Student {
+  id: number;
+  email: string;
+  name: string;
+}
+
+const fetchGroups = async (courseID: string) => {
+  const groups = await fetch(`http://127.0.0.1:8080/groups/${courseID}`);
+
+
+
+  useEffect( () => {
+
+  }, [])
 }
