@@ -1,5 +1,7 @@
-import { Calendar, Home, Inbox, Search, Settings } from "lucide-react"
+"use client";
 
+import { Calendar, Home, Inbox, Search, Settings } from "lucide-react"
+import FileDrop from "./file-drop"
 import {
   Sidebar,
   SidebarContent,
@@ -18,11 +20,11 @@ const items = [
     url: "/instructor",
     icon: Home,
   },
-  {
-    title: "Import CSV",
-    url: "#",
-    icon: Inbox,
-  },
+  // {
+  //   title: "Import CSV",
+  //   url: "#",
+  //   icon: Inbox,
+  // },
   
 ]
 
@@ -45,6 +47,7 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+              {/* <FileDrop/> */}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

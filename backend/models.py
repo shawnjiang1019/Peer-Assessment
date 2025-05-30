@@ -35,8 +35,12 @@ class Course(Base):
 class Student(Base):
     __tablename__ = "students"
     id = Column(Integer, primary_key=True, index=False)
+    student_id = Column(Integer, unique=True, index=False)
     email = Column(String)
     name = Column(String)
+    firstname = Column(String)
+    lastname = Column(String)
+    utorid = Column(String, primary_key=True)
     groups = relationship("StudentGroup", back_populates="student")
 
 
@@ -45,6 +49,7 @@ class Group(Base):
     __tablename__ = "groups"
     id = Column(Integer, primary_key=True, index=True)
     courseCode = Column(String, ForeignKey("courses.code"))
+    groupNumber = Column(Integer)
     students = relationship("StudentGroup", back_populates="group")
 
 

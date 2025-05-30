@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Security, Depends, HTTPException
 from utils import VerifyToken
 from routers.test import router as test_router
+from routers.api import router as api_router
 from routers.groups import router as group_router
 from sqlalchemy.orm import Session
 from models import SessionLocal, User, Course
@@ -12,8 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI()
 #auth = VerifyToken()
 
-app.include_router(test_router, prefix="/api")
-app.include_router(group_router, prefix="/groups")
+app.include_router(api_router, prefix="/api")
+app.include_router(group_router, prefix="/group")
 
 origins = [
     "http://localhost:3000",  # frontend dev server (React, etc.)
