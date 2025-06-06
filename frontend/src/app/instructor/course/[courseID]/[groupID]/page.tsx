@@ -12,31 +12,32 @@ import { useAuth0 } from "@auth0/auth0-react";
 
 import { useUser } from "@/providers/user-provider";
 import { useRouter } from 'next/navigation'
+import { Group } from "next/dist/shared/lib/router/utils/route-regex";
 
 
-interface CourseData{
-    code: string;
-    session: string;
-    lecturer_id: number;
+interface GroupData{
+    courseCode: string;
+    courseID: string;
+    groupNumber: number;
     id: number;
 }
 
 
-const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
-    const response = await fetch("http://127.0.0.1:8080/api/courses", {
+const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
+    const url: URL = new URL("http://127.0.0.1:8080/group/getgroups");
+    url.searchParams.append('courseID', courseID.toString());
+
+    const response = await fetch(url, {
         method: "GET",
-        headers: {
-            'instructorID': lecturer_id.toString()
-        }
     });
-    const data = await response.json();
+    const data: GroupData[] = await response.json();
     console.log(data);
     return data;
 }
 
-const Instructor = () => {
+const Groups = ({ params }: { params: { courseID: number }}) => {
     const { user } = useUser();
-    const [courses, setCourses] = useState<CourseData[]>([]);
+    const [groups, setGroups] = useState<GroupData[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     
@@ -52,12 +53,12 @@ const Instructor = () => {
                 if (!user){
                     throw new Error("Uh Oh");
                 }
-                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
-                setCourses(coursedata);
+                const groupdata: GroupData[] = await fetchGroups(params.courseID); // Hardcoded lecturer ID for now
+                setGroups(groupdata);
                 
                 
             } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load courses");
+                setError(err instanceof Error ? err.message : "Failed to load groups");
             } finally {
                 setLoading(false);
             }
@@ -66,30 +67,30 @@ const Instructor = () => {
         loadData();
     }, [user?.id]);
 
-    if (loading) return <div>Loading courses...</div>;
+    if (loading) return <div>Loading groups...</div>;
     if (error) return <div>Error: {error}</div>;
 
 
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {courses.length > 0 ? (
-                courses.map((course) => (
+            {groups.length > 0 ? (
+                groups.map((group) => (
                     
                     
-                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
+                        <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
+                        <button type="button" onClick={() => router.push(`instructor/course/${group.id}`)}>
                         <CardHeader>
-                            <CardTitle>{course.code}</CardTitle>
-                            <CardDescription>{course.session} Session</CardDescription>
+                            <CardTitle>{group.courseCode}</CardTitle>
+                            <CardDescription>Group: {group.courseID}</CardDescription>
                         </CardHeader>
                         <CardContent>
                             <p className="text-sm text-gray-600">
-                                Lecturer ID: {course.lecturer_id}
+                                
                             </p>
                         </CardContent>
                         <CardFooter>
-                            <p>{course.code}</p>
+                            <p>{group.id}</p>
                         </CardFooter>
                         </button>
                     
@@ -99,7 +100,7 @@ const Instructor = () => {
                     
                 ))
             ) : (
-                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
+                <div className="text-gray-500">No groups found for this course, ID = {params.courseID}</div>
             )}
         </div>
     );
@@ -108,4 +109,4 @@ const Instructor = () => {
 
 }
 
-export default Instructor;
+export default Groups;

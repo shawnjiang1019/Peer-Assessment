@@ -8,6 +8,10 @@ from models import SessionLocal, User, Course
 from pydantic import BaseModel
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
+from dependencies import auth
+from routers.users import router as user_router
+from routers.courses import router as course_router
+#from routers.auth import router as auth_router
 
 # Creates app instance
 app = FastAPI()
@@ -15,6 +19,11 @@ app = FastAPI()
 
 app.include_router(api_router, prefix="/api")
 app.include_router(group_router, prefix="/group")
+app.include_router(user_router)
+app.include_router(course_router)
+#app.include_router(auth_router, prefix="/auth")
+
+
 
 origins = [
     "http://localhost:3000",  # frontend dev server (React, etc.)

@@ -2,6 +2,8 @@
 
 import { Calendar, Home, Inbox, Search, Settings } from "lucide-react"
 import FileDrop from "./file-drop"
+import LoginButton from "./loginbutton";
+import LogoutButton from "./logoutbutton";
 import {
   Sidebar,
   SidebarContent,
@@ -47,7 +49,9 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
-              {/* <FileDrop/> */}
+              <FileDrop/>
+              <LoginButton/>
+              <LogoutButton/>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
