@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
 from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
 from io import BytesIO
 from sqlalchemy.orm import Session
@@ -18,6 +18,14 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@router.get("/verifyemail")
+async def verifyEmail(email: str = Query(...), db: Session = Depends(get_db)):
+    allowed_email = db.query(Student).filter(Student.email == email).first();
+    if not allowed_email:
+        raise HTTPException(status_code=400, detail="Email not authorized")
+    return {"allowed": True}
 
 @router.get("/courses")
 async def getCourses(request: Request,  db: Session = Depends(get_db)):

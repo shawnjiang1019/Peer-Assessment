@@ -7,7 +7,7 @@ export default function Home() {
   const router = useRouter();
 
   if (isAuthenticated) {
-    router.push('/instructor');
+    router.push('/authRedirect');
   }
 
   return (

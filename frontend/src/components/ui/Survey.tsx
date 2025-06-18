@@ -4,6 +4,7 @@ import { useState } from 'react';
 interface Question {
   id: string;
   text: string;
+  subtext: string;
 }
 
 interface Answers {
@@ -59,12 +60,13 @@ const Survey = ({ questions }: SurveyProps) => {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md">
+    <form onSubmit={handleSubmit} className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md content-center">
       <h2 className="text-2xl font-bold mb-6 text-center">Survey</h2>
       
       {questions.map((question) => (
         <fieldset key={question.id} className="mb-8 p-4 border rounded-lg">
           <legend className="text-lg font-semibold mb-3">{question.text}</legend>
+          <p>{question.subtext}</p>
           <div className="flex justify-between">
             {[1, 2, 3, 4, 5].map((value) => (
               <OptionButton 

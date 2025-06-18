@@ -38,7 +38,8 @@ async def getStudentsInGroup(groupID: int, db: Session = Depends(get_db)):
     # 3. Fixed list comprehension syntax
     studentIDs = [row.student_id for row in student_group_relations]
 
-    return {"student_ids": studentIDs}
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
 
 
 #later on also need to verify that the instructor is in this course as a lecturer
@@ -49,3 +50,11 @@ async def getStudentInfo(studentID: int, db: Session = Depends(get_db)):
     student_row = db.query(Student).filter(Student.id == studentID).first()
     
     return student_row
+
+@router.get("/usersgroups")
+async def getGroups(studentID: int, db: Session = Depends(get_db)):
+    group_ids = db.query(StudentGroup.group_id).filter(
+        StudentGroup.student_id == studentID
+    ).all()
+    group_ids = [row[0] for row in group_ids]
+    return group_ids;

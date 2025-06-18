@@ -10,7 +10,21 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 
+import { StudentService, Group } from "./studentlogic";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+
+
 const Student = () => {
+  const router = useRouter();
+  const [ studentServiceInstance ] = useState(() => new StudentService());
+
+  const [groups, setGroups] = useState<Group[]>([]);
+
+  //get groups and set them
+  useEffect(()=> {
+
+  }, [])
   return (
     <div className="p-4">
       <h2 className="text-lg font-semibold mb-6">
@@ -18,6 +32,7 @@ const Student = () => {
       </h2>
       
       <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
+        <button type="button" onClick={() => router.push(`student/course/`)}>
         <Card className="flex-1">
           <CardHeader>
             <CardTitle>STAC67</CardTitle>
@@ -27,7 +42,10 @@ const Student = () => {
             <p>Regression Analysis</p>
           </CardContent>
         </Card>
+        </button>
 
+
+        <button type="button" onClick={() => router.push(``)}>
         <Card className="flex-1">
           <CardHeader>
             <CardTitle>CSCC01</CardTitle>
@@ -37,7 +55,9 @@ const Student = () => {
             <p>Intro to Software Engineering</p>
           </CardContent>
         </Card>
+        </button>
 
+        <button type="button" onClick={() => router.push(``)}>
         <Card className="flex-1">
           <CardHeader>
             <CardTitle>CSCC01</CardTitle>
@@ -47,7 +67,7 @@ const Student = () => {
             <p>Intro to Software Engineering</p>
           </CardContent>
         </Card>
-
+        </button>
 
       </div>
     </div>

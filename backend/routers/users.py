@@ -40,6 +40,6 @@ async def getUserByAuth0(auth0_sub: str, db: Session = Depends(get_db)):
         "name": user.name,
         "email": user.email,
         "auth0_sub": user.auth0_id,
-        # add any other fields you want to expose
+        "role": user.role
     }
 

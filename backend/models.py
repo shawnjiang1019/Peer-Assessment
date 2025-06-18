@@ -37,7 +37,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     email = Column(String)
-    auth0_id = Column(String, unique=True, index=True)  # Add this
+    auth0_id = Column(String, unique=True, index=True)
+    role = Column(String, default="student")
 
     courses = relationship("Course", back_populates="lecturer")
 

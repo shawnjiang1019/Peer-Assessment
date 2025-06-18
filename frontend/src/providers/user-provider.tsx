@@ -6,6 +6,7 @@ interface User {
   name: string;
   email: string;
   auth0_id?: string;
+  role: string;
 }
 
 interface UserContextType {
@@ -104,6 +105,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
           name: userData.name,
           email: userData.email,
           auth0_id: userData.auth0_sub || auth0User.sub,
+          role: userData.role || 'student'
         });
       } catch (err) {
         console.error("User sync error:", err);

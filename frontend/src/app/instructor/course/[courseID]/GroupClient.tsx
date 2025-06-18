@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/card"
 import { useAuth0 } from "@auth0/auth0-react";
 import { useUser } from "@/providers/user-provider";
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
+import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
 
 interface GroupData {
   courseCode: string;
@@ -36,7 +37,8 @@ const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
   const [groups, setGroups] = useState<GroupData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
+  const router: AppRouterInstance = useRouter();
+  const pathname: string = usePathname();
 
   useEffect(() => {
     if (!user?.id) return;
@@ -65,7 +67,7 @@ const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
           <Card key={group.id} className="hover:shadow-lg transition-shadow">
             <button 
               type="button" 
-              onClick={() => router.push(`instructor/course/${group.id}`)}
+              onClick={() => router.push(`${pathname}/${group.id}`)}
               className="w-full text-left"
             >
               <CardHeader>
