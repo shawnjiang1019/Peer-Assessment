@@ -26,7 +26,7 @@ async def getStudentsInGroup(groupID: int, db: Session = Depends(get_db)):
     group = db.query(Group).filter(
         Group.id == groupID,
     ).first()
-    
+
     if not group:
         raise HTTPException(status_code=404, detail="Group not found in this course")
 
@@ -57,4 +57,9 @@ async def getGroups(studentID: int, db: Session = Depends(get_db)):
         StudentGroup.student_id == studentID
     ).all()
     group_ids = [row[0] for row in group_ids]
-    return group_ids;
+
+
+    groups = db.query(Group).filter(
+        Group.id.in_(group_ids)
+    ).all()
+    return groups;
