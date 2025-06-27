@@ -7,7 +7,11 @@ from sqlalchemy.orm import Session
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-
+@router.get("/studentid")
+async def getStudentID(email: str, db: Session = Depends(get_db)):
+    #get based on the same email
+    student = db.query(Student).filter(Student.email == email).first()
+    return student.id
 
 @router.post("")
 async def create_user(payload: dict = Body(...), db: Session = Depends(get_db)):

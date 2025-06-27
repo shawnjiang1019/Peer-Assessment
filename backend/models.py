@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
-
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from dotenv import load_dotenv
 import os
@@ -14,22 +14,19 @@ def get_db():
         yield db
     finally:
         db.close()
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-
-
 #helper to get find a user id base on the auth0_id
 def get_user_id(auth0_id: str) -> int:
-    with SessionLocal as session:
+    with SessionLocal() as session:
         stmt = select(User.id).where(User.auth0_id == auth0_id)
         result = session.execute(stmt).scalar()
         return result 
-
-
 
 #User (instructor) object
 class User(Base):
@@ -42,8 +39,6 @@ class User(Base):
 
     courses = relationship("Course", back_populates="lecturer")
 
-    
-
 #course object
 class Course(Base):
     __tablename__ = "courses"
@@ -51,10 +46,10 @@ class Course(Base):
     code = Column(String, index=True)
     session = Column(String)
     lecturer_id = Column(Integer, ForeignKey("users.id"))
+    
     lecturer = relationship("User", back_populates="courses")
     enrollments = relationship("StudentCourse", back_populates="course")
-
-
+    surveys = relationship("StudentSurvey", back_populates="course")
 
 #student object
 class Student(Base):
@@ -69,9 +64,10 @@ class Student(Base):
 
     groups = relationship("StudentGroup", back_populates="student")
     enrollments = relationship("StudentCourse", back_populates="student")
-
-
-
+    
+    # Fixed relationships - using StudentSurvey instead of Survey
+    surveys_as_evaluator = relationship("StudentSurvey", foreign_keys="StudentSurvey.evaluator_id", back_populates="evaluator")
+    surveys_as_evaluatee = relationship("StudentSurvey", foreign_keys="StudentSurvey.evaluatee_id", back_populates="evaluatee")
 
 class Group(Base):
     __tablename__ = "groups"
@@ -79,9 +75,9 @@ class Group(Base):
     courseCode = Column(String)
     courseID = Column(Integer, ForeignKey("courses.id"))
     groupNumber = Column(Integer)
+
     students = relationship("StudentGroup", back_populates="group")
-
-
+    surveys = relationship("StudentSurvey", back_populates="group")
 
 #Student and course relation table
 class StudentCourse(Base):
@@ -98,8 +94,30 @@ class StudentGroup(Base):
     __tablename__ = "student_group"
     student_id = Column(Integer, ForeignKey("students.id"), primary_key=True)
     group_id = Column(Integer, ForeignKey("groups.id"), primary_key=True)
+    
     student = relationship("Student", back_populates="groups")
     group = relationship("Group", back_populates="students")
 
 
+class Question(Base):
+    __tablename__ = "question"
+    qid = Column(String, primary_key=True)
+    options = Column(ARRAY(Integer))
 
+#Student and Survey relation table, keeps track of which students have finished which surveys for which courses
+class StudentSurvey(Base):
+    __tablename__ = "student_survey"
+    survey_response_id = Column(Integer, primary_key=True)
+    evaluator_id = Column(Integer, ForeignKey("students.id"))
+    evaluatee_id = Column(Integer, ForeignKey("students.id"))
+    question_id = Column(String, ForeignKey("question.qid"))
+    answer = Column(Integer)
+    group_id = Column(Integer, ForeignKey("groups.id"))
+    course_id = Column(Integer, ForeignKey("courses.id"))
+    course_code = Column(String)
+
+    # Specify which FK to use for each relationship
+    evaluator = relationship("Student", foreign_keys=[evaluator_id], back_populates="surveys_as_evaluator")
+    evaluatee = relationship("Student", foreign_keys=[evaluatee_id], back_populates="surveys_as_evaluatee")
+    group = relationship("Group", back_populates="surveys")
+    course = relationship("Course", back_populates="surveys")

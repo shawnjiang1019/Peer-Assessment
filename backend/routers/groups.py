@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
 
 
 router = APIRouter()
@@ -63,3 +65,21 @@ async def getGroups(studentID: int, db: Session = Depends(get_db)):
         Group.id.in_(group_ids)
     ).all()
     return groups;
+
+
+class StudentSurveyBase(BaseModel):
+    evaluator_id: int
+    question_id: str
+    answer: int
+    evaluatee_id: int
+    group_id: int
+    course_id: int
+    course_code: str
+
+@router.post("/postsurvey")
+async def postSurveyInstance(surveyResponse: StudentSurveyBase, db: Session = Depends(get_db)):
+    db_survey = StudentSurvey(**surveyResponse.model_dump())
+    db.add(db_survey)
+    db.commit()
+    db.refresh(db_survey)
+    return db_survey

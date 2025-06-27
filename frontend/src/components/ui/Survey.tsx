@@ -1,6 +1,8 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { Student, studentService } from '@/app/student/studentlogic';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Student, SurveyInstance, studentService } from '@/app/student/studentlogic';
+import { useAuth0 } from '@auth0/auth0-react';
+import { useUser } from '@/providers/user-provider';
 
 interface Question {
   id: string;
@@ -8,22 +10,30 @@ interface Question {
   subtext: string;
 }
 
-interface Answers {
-  [key: string]: number; // Question ID to selected value
-}
-
-interface OptionButtonProps {
+interface SurveyAnswer {
+  studentId: number;
+  questionId: string;
   value: number;
-  selected: boolean;
-  onClick: () => void;
 }
 
 interface SurveyProps {
   questions: Question[];
   groupID: number;
+  courseID: number;
+  studentID: number;
+  courseCode: string;
 }
 
-const OptionButton = ({ value, selected, onClick }: OptionButtonProps) => (
+// Separate component for option buttons
+const OptionButton = ({ 
+  value, 
+  selected, 
+  onClick 
+}: { 
+  value: number; 
+  selected: boolean; 
+  onClick: () => void; 
+}) => (
   <button
     type="button"
     onClick={onClick}
@@ -38,46 +48,104 @@ const OptionButton = ({ value, selected, onClick }: OptionButtonProps) => (
   </button>
 );
 
-const Survey = (SurveyParams: SurveyProps) => {
+// Separate component for student question row
+const StudentQuestionRow = ({
+  student,
+  questionId,
+  selectedValue,
+  onSelect,
+  showError,
+  isAnswered
+}: {
+  student: Student;
+  questionId: string;
+  selectedValue?: number;
+  onSelect: (value: number) => void;
+  showError: boolean;
+  isAnswered: boolean;
+}) => {
+  const isMissing = !isAnswered && showError;
+
+  return (
+    <div 
+      className={`p-4 rounded-lg shadow transition-all ${
+        isMissing 
+          ? 'bg-red-50 border border-red-200 missing-answer' 
+          : 'bg-white'
+      }`}
+    >
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-lg font-semibold">{student.name}</span>
+        {isAnswered && (
+          <span className="text-green-600 text-sm">✓ Answered</span>
+        )}
+        {isMissing && (
+          <span className="text-red-600 text-sm">⚠ Required</span>
+        )}
+      </div>
+      <div className="flex justify-between">
+        {[1, 2, 3, 4, 5].map((value) => (
+          <OptionButton 
+            key={value}
+            value={value}
+            selected={selectedValue === value}
+            onClick={() => onSelect(value)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// Custom hook for survey logic
+const useSurveyLogic = (groupID: number, questions: Question[]) => {
   const [students, setStudents] = useState<Student[]>([]);
-  const [answers, setAnswers] = useState<Answers>({});
-  const [submitted, setSubmitted] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [showError, setShowError] = useState<boolean>(false);
+  const [answers, setAnswers] = useState<Map<string, number>>(new Map());
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const getStudents = async () => {
-      const data: Student[] = await studentService.getStudentsInGroup(SurveyParams.groupID);
-      setStudents(data || []);
-      setLoading(false);
-    }
-    getStudents();
-  }, [SurveyParams]);
+    const loadStudents = async () => {
+      try {
+        const data = await studentService.getStudentsInGroup(groupID);
+        setStudents(data || []);
+      } catch (error) {
+        console.error('Failed to load students:', error);
+        setStudents([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadStudents();
+  }, [groupID]);
 
-  const handleSelect = (studentId: number, questionId: string, value: number) => {
-    setAnswers(prev => ({
-      ...prev,
-      [`${studentId}-${questionId}`]: value
-    }));
-    // Hide error when user starts answering
-    if (showError) {
-      setShowError(false);
-    }
-  };
+  const setAnswer = useCallback((studentId: number, questionId: string, value: number) => {
+    const key = `${studentId}-${questionId}`;
+    setAnswers(prev => new Map(prev).set(key, value));
+  }, []);
 
-  // Calculate total required answers
-  const totalRequiredAnswers = students.length * SurveyParams.questions.length;
-  const currentAnswers = Object.keys(answers).length;
-  const isComplete = currentAnswers === totalRequiredAnswers;
+  const getAnswer = useCallback((studentId: number, questionId: string): number | undefined => {
+    return answers.get(`${studentId}-${questionId}`);
+  }, [answers]);
 
-  // Get missing answers for better user feedback
-  const getMissingAnswers = () => {
-    const missing: { studentName: string; questionText: string }[] = [];
+  const isAnswered = useCallback((studentId: number, questionId: string): boolean => {
+    return answers.has(`${studentId}-${questionId}`);
+  }, [answers]);
+
+  // Memoized calculations
+  const totalRequired = useMemo(() => 
+    students.length * questions.length, 
+    [students.length, questions.length]
+  );
+
+  const currentAnswers = answers.size;
+  const isComplete = currentAnswers === totalRequired;
+
+  const missingAnswers = useMemo(() => {
+    const missing: Array<{ studentName: string; questionText: string }> = [];
     
     students.forEach(student => {
-      SurveyParams.questions.forEach(question => {
-        const key = `${student.id}-${question.id}`;
-        if (!answers[key]) {
+      questions.forEach(question => {
+        if (!isAnswered(student.id, question.id)) {
           missing.push({
             studentName: student.name,
             questionText: question.text
@@ -87,29 +155,110 @@ const Survey = (SurveyParams: SurveyProps) => {
     });
     
     return missing;
-  };
+  }, [students, questions, isAnswered]);
 
-  // Check if specific student-question combo is answered
-  const isAnswered = (studentId: number, questionId: string) => {
-    return answers[`${studentId}-${questionId}`] !== undefined;
+  return {
+    students,
+    answers,
+    loading,
+    setAnswer,
+    getAnswer,
+    isAnswered,
+    totalRequired,
+    currentAnswers,
+    isComplete,
+    missingAnswers
   };
+};
 
-  const handleSubmit = (e: React.FormEvent) => {
+// Main Survey Component
+const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyProps) => {
+  //const { user } = useAuth0();
+  const { user } = useUser();
+  
+  const {
+    students,
+    loading,
+    setAnswer,
+    getAnswer,
+    isAnswered,
+    totalRequired,
+    currentAnswers,
+    isComplete,
+    missingAnswers
+  } = useSurveyLogic(groupID, questions);
+
+  const [submitted, setSubmitted] = useState(false);
+  const [showError, setShowError] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSelect = useCallback((studentId: number, questionId: string, value: number) => {
+    setAnswer(studentId, questionId, value);
+    if (showError) {
+      setShowError(false);
+    }
+  }, [setAnswer, showError]);
+  
+  const createSurveyPayloads = useCallback((): SurveyInstance[] => {
+    
+    
+    const payloads: SurveyInstance[] = [];
+    const evaluatorId = user?.id ?? 313785;
+    
+    //user?.sub ? parseInt(user.sub.replace('auth0|', '')) : 313785;
+    
+    students.forEach(student => {
+      questions.forEach(question => {
+        const answer = getAnswer(student.id, question.id);
+        
+        if (answer !== undefined) {
+          payloads.push({
+            evaluator_id: studentID,
+            question_id: question.id,
+            answer: answer,
+            evaluatee_id: student.id,
+            group_id: groupID,
+            course_id: courseID,
+            course_code: courseCode
+          });
+        }
+      });
+    });
+    console.log(payloads);
+    return payloads;
+    
+  }, [students, questions, getAnswer, groupID, courseID]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!isComplete) {
       setShowError(true);
-      // Scroll to first missing answer
       const firstMissing = document.querySelector('.missing-answer');
-      if (firstMissing) {
-        firstMissing.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      firstMissing?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
 
-    console.log('Survey responses:', answers);
-    setSubmitted(true);
-    // Add API submission logic here
+    setSubmitting(true);
+    
+    try {
+      const payloads = createSurveyPayloads();
+      console.log('Survey payloads:', payloads);
+      
+      // Submit all responses
+      for (const payload of payloads) {
+        console.log('Submitting:', payload);
+        await studentService.postSurveyInstance(payload);
+        // await studentService.submitSurveyResponse(payload);
+      }
+      
+      setSubmitted(true);
+    } catch (error) {
+      console.error('Error submitting survey:', error);
+      setShowError(true);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (loading) {
@@ -125,27 +274,28 @@ const Survey = (SurveyParams: SurveyProps) => {
       <div className="p-4 bg-green-100 text-green-800 rounded-lg text-center">
         <h3 className="text-lg font-semibold mb-2">Thank you for completing the survey!</h3>
         <p>All responses have been recorded successfully.</p>
+        <div className="mt-4 text-sm">
+          <p>Submitted {currentAnswers} responses for {students.length} students across {questions.length} questions.</p>
+        </div>
       </div>
     );
   }
 
-  const missingAnswers = getMissingAnswers();
-
   return (
-    <form onSubmit={handleSubmit} className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md content-center">
+    <form onSubmit={handleSubmit} className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md">
       <h2 className="text-2xl font-bold mb-6 text-center">Survey</h2>
       
       {/* Progress indicator */}
       <div className="mb-6">
         <div className="flex justify-between text-sm mb-2">
           <span>Progress</span>
-          <span>{currentAnswers}/{totalRequiredAnswers} completed</span>
+          <span>{currentAnswers}/{totalRequired} completed</span>
         </div>
         <div className="w-full bg-gray-200 rounded-full h-2">
           <div 
             className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-            style={{ width: `${(currentAnswers / totalRequiredAnswers) * 100}%` }}
-          ></div>
+            style={{ width: `${(currentAnswers / totalRequired) * 100}%` }}
+          />
         </div>
       </div>
 
@@ -168,46 +318,22 @@ const Survey = (SurveyParams: SurveyProps) => {
         </div>
       )}
       
-      {SurveyParams.questions.map((question) => (
+      {questions.map((question) => (
         <fieldset key={question.id} className="mb-8 p-4 border rounded-lg">
           <legend className="text-lg font-semibold mb-3">{question.text}</legend>
           <p className="text-gray-600 mb-4">{question.subtext}</p>
           <div className="space-y-6">
-            {students.map((student) => {
-              const isStudentQuestionAnswered = isAnswered(student.id, question.id);
-              const isMissing = !isStudentQuestionAnswered;
-              
-              return (
-                <div 
-                  key={student.id} 
-                  className={`p-4 rounded-lg shadow transition-all ${
-                    isMissing && showError 
-                      ? 'bg-red-50 border border-red-200 missing-answer' 
-                      : 'bg-white'
-                  }`}
-                >
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-lg font-semibold">{student.name}</span>
-                    {isStudentQuestionAnswered && (
-                      <span className="text-green-600 text-sm">✓ Answered</span>
-                    )}
-                    {isMissing && showError && (
-                      <span className="text-red-600 text-sm">⚠ Required</span>
-                    )}
-                  </div>
-                  <div className="flex justify-between">
-                    {[1, 2, 3, 4, 5].map((value) => (
-                      <OptionButton 
-                        key={value}
-                        value={value}
-                        selected={answers[`${student.id}-${question.id}`] === value}
-                        onClick={() => handleSelect(student.id, question.id, value)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+            {students.map((student) => (
+              <StudentQuestionRow
+                key={student.id}
+                student={student}
+                questionId={question.id}
+                selectedValue={getAnswer(student.id, question.id)}
+                onSelect={(value) => handleSelect(student.id, question.id, value)}
+                showError={showError}
+                isAnswered={isAnswered(student.id, question.id)}
+              />
+            ))}
           </div>
         </fieldset>
       ))}
@@ -216,15 +342,17 @@ const Survey = (SurveyParams: SurveyProps) => {
         <button 
           type="submit" 
           className={`w-full py-3 rounded-lg transition font-semibold ${
-            isComplete
+            isComplete && !submitting
               ? 'bg-blue-600 text-white hover:bg-blue-700' 
               : 'bg-gray-300 text-gray-500 cursor-not-allowed'
           }`}
-          disabled={!isComplete}
+          disabled={!isComplete || submitting}
         >
-          {isComplete 
-            ? 'Submit Survey' 
-            : `Complete All Questions (${currentAnswers}/${totalRequiredAnswers})`
+          {submitting 
+            ? 'Submitting...'
+            : isComplete 
+              ? 'Submit Survey' 
+              : `Complete All Questions (${currentAnswers}/${totalRequired})`
           }
         </button>
         

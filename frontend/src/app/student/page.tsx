@@ -56,7 +56,7 @@ const Student = () => {
                     
                     
                         <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`student/survey/${group.id}`)}>
+                        <button type="button" onClick={() => router.push(`student/survey/${group.id}/${group.courseID}/${group.courseCode}`)}>
                         <CardHeader>
                             <CardTitle>{group.courseCode}</CardTitle>
                             <CardDescription>Group {group.groupNumber} </CardDescription>

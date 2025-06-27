@@ -15,6 +15,15 @@ export interface Student{
     lname: string;
 }
 
+export interface SurveyInstance{
+    evaluator_id: number;
+    question_id: string;
+    evaluatee_id: number;
+    group_id: number;
+    course_id: number;
+    course_code: string;
+    answer: number;
+}
 
 export class StudentService{
 
@@ -41,6 +50,28 @@ export class StudentService{
         } catch (error) {
             console.error('Error fetching students in group:', error);
             return null;
+        }
+    }
+
+    async getStudentID(email: string){
+        try {
+            const response = await AxiosClient.get('users/studentid/' , {
+                params: { email: email }
+            });
+            return response.data
+        } catch(error){
+            console.error('Could not get the student ID from the specified email', error);
+            return null;
+        }
+    }
+
+    async postSurveyInstance(payload: SurveyInstance){
+        try {
+            const response = await AxiosClient.post('group/postsurvey/', payload);
+            return response.data;
+        } catch(error){
+            console.error('Error posting survey:', error);
+            throw error;
         }
     }
 }
