@@ -2,13 +2,17 @@
 import { useAuth0 } from '@auth0/auth0-react';
 import { useRouter } from 'next/navigation';
 import LoginButton from '@/components/loginbutton';
+import { useEffect } from 'react';
 export default function Home() {
   const { isAuthenticated } = useAuth0();
   const router = useRouter();
 
+  
   if (isAuthenticated) {
     router.push('/authRedirect');
   }
+
+  
 
   return (
     <div className="min-h-screen flex items-center justify-center">

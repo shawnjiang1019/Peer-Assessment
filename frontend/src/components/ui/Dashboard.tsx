@@ -4,7 +4,7 @@ import { useEffect, useState } from "react"
 import { instructorService } from "@/app/instructor/instructorlogic";
 import { useUser } from "@/providers/user-provider";
 import { Student } from "@/app/student/studentlogic";
-
+import Factortable from "./FactorTable";
 
 
 interface DashboardProps{
@@ -12,12 +12,14 @@ interface DashboardProps{
     groupID: number;
 }
 
-interface AdjustmentFactorTableProps{
-    factor: number;
-    area: string;
+interface AdjustmentFactorTableProps {
+    q1: number;
+    q2: number;
+    q3: number;
+    q4: number;
 }
 
-interface StudentFactors{
+export interface StudentFactors{
     studentID: number;
     data: AdjustmentFactorTableProps;
 }
@@ -61,6 +63,9 @@ const Dashboard = (params: DashboardProps) => {
 
     return(
         <div>
+            
+
+            <Factortable data={studentFactors}/>
 
         </div>
     );

@@ -30,6 +30,8 @@ async def calculateStudentAverageScore(data: List[StudentSurveyBase], factor: st
     factor given a list of their data points (student survey instances)
     '''
     averagescore: float = 0
+    if len(data) == 0:
+        return averagescore
     total: int = 0
     for datapoint in data:
         total = total + datapoint.answer

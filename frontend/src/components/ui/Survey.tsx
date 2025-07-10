@@ -37,7 +37,7 @@ const OptionButton = ({
   <button
     type="button"
     onClick={onClick}
-    className={`w-12 h-12 rounded-full flex items-center justify-center transition-all
+    className={`w-8 h-8 rounded-full flex items-center justify-center transition-all text-sm
       ${selected 
         ? 'bg-blue-600 text-white transform scale-110' 
         : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
@@ -48,8 +48,8 @@ const OptionButton = ({
   </button>
 );
 
-// Separate component for student question row
-const StudentQuestionRow = ({
+// Table cell component for student-question intersection
+const SurveyCell = ({
   student,
   questionId,
   selectedValue,
@@ -67,23 +67,14 @@ const StudentQuestionRow = ({
   const isMissing = !isAnswered && showError;
 
   return (
-    <div 
-      className={`p-4 rounded-lg shadow transition-all ${
+    <td 
+      className={`p-3 border-r border-gray-200 text-center transition-all ${
         isMissing 
-          ? 'bg-red-50 border border-red-200 missing-answer' 
-          : 'bg-white'
+          ? 'bg-red-50 border-red-200 missing-answer' 
+          : 'bg-white hover:bg-gray-50'
       }`}
     >
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-lg font-semibold">{student.name}</span>
-        {isAnswered && (
-          <span className="text-green-600 text-sm">✓ Answered</span>
-        )}
-        {isMissing && (
-          <span className="text-red-600 text-sm">⚠ Required</span>
-        )}
-      </div>
-      <div className="flex justify-between">
+      <div className="flex justify-center gap-1">
         {[1, 2, 3, 4, 5].map((value) => (
           <OptionButton 
             key={value}
@@ -93,11 +84,14 @@ const StudentQuestionRow = ({
           />
         ))}
       </div>
-    </div>
+      {isMissing && (
+        <div className="text-red-600 text-xs mt-1">Required</div>
+      )}
+    </td>
   );
 };
 
-// Custom hook for survey logic
+// Custom hook for survey logic (unchanged)
 const useSurveyLogic = (groupID: number, questions: Question[]) => {
   const [students, setStudents] = useState<Student[]>([]);
   const [answers, setAnswers] = useState<Map<string, number>>(new Map());
@@ -200,12 +194,8 @@ const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyP
   }, [setAnswer, showError]);
   
   const createSurveyPayloads = useCallback((): SurveyInstance[] => {
-    
-    
     const payloads: SurveyInstance[] = [];
     const evaluatorId = user?.id ?? 313785;
-    
-    //user?.sub ? parseInt(user.sub.replace('auth0|', '')) : 313785;
     
     students.forEach(student => {
       questions.forEach(question => {
@@ -226,7 +216,6 @@ const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyP
     });
     console.log(payloads);
     return payloads;
-    
   }, [students, questions, getAnswer, groupID, courseID]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -249,7 +238,6 @@ const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyP
       for (const payload of payloads) {
         console.log('Submitting:', payload);
         await studentService.postSurveyInstance(payload);
-        // await studentService.submitSurveyResponse(payload);
       }
       
       setSubmitted(true);
@@ -282,7 +270,7 @@ const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyP
   }
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md">
+    <form onSubmit={handleSubmit} className="max-w-full mx-auto p-6 bg-white rounded-lg shadow-md">
       <h2 className="text-2xl font-bold mb-6 text-center">Survey</h2>
       
       {/* Progress indicator */}
@@ -317,26 +305,79 @@ const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyP
           </ul>
         </div>
       )}
+
+      {/* Rating scale legend */}
+      <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+        <h3 className="text-sm font-semibold mb-2">Rating Scale:</h3>
+        <div className="flex justify-center gap-6 text-sm">
+          <span>1 - Poor</span>
+          <span>2 - Fair</span>
+          <span>3 - Good</span>
+          <span>4 - Very Good</span>
+          <span>5 - Excellent</span>
+        </div>
+      </div>
       
-      {questions.map((question) => (
-        <fieldset key={question.id} className="mb-8 p-4 border rounded-lg">
-          <legend className="text-lg font-semibold mb-3">{question.text}</legend>
-          <p className="text-gray-600 mb-4">{question.subtext}</p>
-          <div className="space-y-6">
+      {/* Survey Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse border border-gray-300 bg-white">
+          <thead>
+            <tr className="bg-gray-100">
+              <th className="border border-gray-300 p-3 text-left font-semibold sticky left-0 bg-gray-100 z-10">
+                Student
+              </th>
+              {questions.map((question) => (
+                <th 
+                  key={question.id} 
+                  className="border border-gray-300 p-3 text-center font-semibold min-w-[200px]"
+                >
+                  <div className="mb-2">{question.text}</div>
+                  <div className="text-xs text-gray-600 font-normal">
+                    {question.subtext}
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
             {students.map((student) => (
-              <StudentQuestionRow
-                key={student.id}
-                student={student}
-                questionId={question.id}
-                selectedValue={getAnswer(student.id, question.id)}
-                onSelect={(value) => handleSelect(student.id, question.id, value)}
-                showError={showError}
-                isAnswered={isAnswered(student.id, question.id)}
-              />
+              <tr key={student.id} className="hover:bg-gray-50">
+                <td className="border border-gray-300 p-3 font-medium sticky left-0 bg-white z-10">
+                  <div className="flex items-center justify-between">
+                    <span>{student.name}</span>
+                    <div className="flex gap-1">
+                      {questions.map((question) => (
+                        <div
+                          key={question.id}
+                          className={`w-2 h-2 rounded-full ${
+                            isAnswered(student.id, question.id)
+                              ? 'bg-green-500'
+                              : 'bg-gray-300'
+                          }`}
+                          title={`${question.text}: ${
+                            isAnswered(student.id, question.id) ? 'Answered' : 'Not answered'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </td>
+                {questions.map((question) => (
+                  <SurveyCell
+                    key={question.id}
+                    student={student}
+                    questionId={question.id}
+                    selectedValue={getAnswer(student.id, question.id)}
+                    onSelect={(value) => handleSelect(student.id, question.id, value)}
+                    showError={showError}
+                    isAnswered={isAnswered(student.id, question.id)}
+                  />
+                ))}
+              </tr>
             ))}
-          </div>
-        </fieldset>
-      ))}
+          </tbody>
+        </table>
+      </div>
 
       <div className="mt-8">
         <button 
