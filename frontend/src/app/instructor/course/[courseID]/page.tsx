@@ -1,9 +1,19 @@
 import Dashboard from '@/components/ui/Dashboard';
 import CoursePageClient from './CoursePageClient';
 import Groups from './GroupClient';
-const CoursePage = async ({ params }: { params: { courseID: string } }) => {
+
+interface CoursePageProps {
+  params: Promise<{
+    courseID: string;
+  }>;
+}
+
+const CoursePage = async ({ params }: CoursePageProps) => {
+  // Await the params before using them
+  const { courseID } = await params;
+  
   // Convert to number if needed
-  const numericCourseId = parseInt(params.courseID);
+  const numericCourseId = parseInt(courseID);
 
   return (
     <div>

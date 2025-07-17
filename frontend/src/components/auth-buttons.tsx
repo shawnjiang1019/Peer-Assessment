@@ -8,7 +8,7 @@ export default function AuthButtons() {
   if (isLoading) return <div>Loading...</div>;
 
   return isAuthenticated ? (
-    <button onClick={() => logout({ logoutParams: { returnTo: window.location.origin })}>
+    <button onClick={() => logout({ logoutParams: { returnTo: window.location.origin }})}>
       Logout
     </button>
   ) : (

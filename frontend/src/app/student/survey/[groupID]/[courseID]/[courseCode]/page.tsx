@@ -8,34 +8,45 @@ import { Student, Group, SurveyInstance } from '../../../../studentlogic';
 import { useUser } from '@/providers/user-provider';
 
 interface PageProps {
-  params: {
+  params: Promise<{
     groupID: string;
     courseID: number;
     courseCode: string;
-  };
+  }>;
 }
 
-
 export default function SurveyPage({ params } : PageProps) {
-
   const [students, setStudents] = useState<Student[]>([]);
   const [isloading, setIsLoading] = useState<boolean>(true);
   const [studentNum, setStudentNum] = useState<number>(0);
+  const [resolvedParams, setResolvedParams] = useState<{
+    groupID: string;
+    courseID: number;
+    courseCode: string;
+  } | null>(null);
   const { user, loading } = useUser();
   
+  // Resolve params in useEffect since this is a client component
+  useEffect(() => {
+    const resolveParams = async () => {
+      const resolved = await params;
+      setResolvedParams(resolved);
+    };
+    resolveParams();
+  }, [params]);
 
-  useEffect(()=> {
+  useEffect(() => {
+    if (!resolvedParams) return;
+    
     const getStudentsInGroup = async () => {
-      const data: Student[] = await studentService.getStudentsInGroup(parseInt(params.groupID));
+      const data: Student[] = await studentService.getStudentsInGroup(parseInt(resolvedParams.groupID));
       setStudents(data || []);
-  
-    }
+    };
 
     getStudentsInGroup();
-    
-  }, [])
+  }, [resolvedParams]);
 
-  useEffect( ()=> {
+  useEffect(() => {
     const getStudentID = async () => {
       if (!user?.email) {
         console.log('User email not available yet');
@@ -50,11 +61,9 @@ export default function SurveyPage({ params } : PageProps) {
       } catch (error) {
         console.error('Failed to fetch student ID:', error);
       }
-      
     };
     getStudentID();
-
-  }, [user?.email])
+  }, [user?.email]);
 
   useEffect(() => {
     // Set loading to false when both user and students are loaded
@@ -63,10 +72,7 @@ export default function SurveyPage({ params } : PageProps) {
     }
   }, [loading, students]);
 
-
-
-
-  if (loading || isloading) {
+  if (loading || isloading || !resolvedParams) {
     return (
       <main className="min-h-screen bg-gray-50 py-12">
         <div className="container mx-auto px-4">
@@ -113,18 +119,15 @@ export default function SurveyPage({ params } : PageProps) {
         </div>
         
         <div className="space-y-8">
-          
-            
-              <Survey 
-                questions={surveyQuestions} 
-                groupID={parseInt(params.groupID)}
-                studentID={studentNum}
-                courseID={params.courseID}
-                courseCode={params.courseCode}
-                // studentId={student.id}
-                // studentName={student.name}
-              />
-
+          <Survey 
+            questions={surveyQuestions} 
+            groupID={parseInt(resolvedParams.groupID)}
+            studentID={studentNum}
+            courseID={resolvedParams.courseID}
+            courseCode={resolvedParams.courseCode}
+            // studentId={student.id}
+            // studentName={student.name}
+          />
         </div>
       </div>
     </main>
