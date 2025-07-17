@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -121,3 +121,16 @@ class StudentSurvey(Base):
     evaluatee = relationship("Student", foreign_keys=[evaluatee_id], back_populates="surveys_as_evaluatee")
     group = relationship("Group", back_populates="surveys")
     course = relationship("Course", back_populates="surveys")
+
+
+class StudentAdjustmentFactor(Base):
+    __tablename__ = "student_adjustment_factors"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    courseCode = Column(String)
+    utorid = Column(String, ForeignKey("students.utorid"))
+    courseid = Column(Integer, ForeignKey("courses.id"))
+    groupNumber = Column(Integer)
+    factorWithSelf = Column(Float)
+    factorWithoutSelf = Column(Float)

@@ -1,3 +1,4 @@
+import Dashboard from '@/components/ui/Dashboard';
 import CoursePageClient from './CoursePageClient';
 import Groups from './GroupClient';
 const CoursePage = async ({ params }: { params: { courseID: string } }) => {
@@ -8,7 +9,7 @@ const CoursePage = async ({ params }: { params: { courseID: string } }) => {
     <div>
       <Groups courseId={numericCourseId}/>
       <CoursePageClient courseId={numericCourseId} />
-      
+      <Dashboard courseID={numericCourseId}/>
     </div>
   );
 };

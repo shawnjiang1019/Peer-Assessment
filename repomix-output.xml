@@ -46,6 +46,7 @@ backend/alembic.ini
 backend/alembic/env.py
 backend/alembic/README
 backend/alembic/script.py.mako
+backend/application/cache.py
 backend/application/config.py
 backend/create_tables.py
 backend/dependencies/auth.py
@@ -55,7 +56,11 @@ backend/migrations/README
 backend/migrations/script.py.mako
 backend/models.py
 backend/routers/api.py
+backend/routers/calculations.py
 backend/routers/courses.py
+backend/routers/export.py
+backend/routers/factor.py
+backend/routers/factor1.py
 backend/routers/groups.py
 backend/routers/test.py
 backend/routers/users.py
@@ -73,6 +78,9 @@ frontend/public/next.svg
 frontend/public/vercel.svg
 frontend/public/window.svg
 frontend/README.md
+frontend/src/app/api/axiosClient.ts
+frontend/src/app/authRedirect/authlogic.ts
+frontend/src/app/authRedirect/page.tsx
 frontend/src/app/globals.css
 frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx
 frontend/src/app/instructor/course/[courseID]/[groupID]/page.tsx
@@ -82,14 +90,17 @@ frontend/src/app/instructor/course/[courseID]/GroupClient.tsx
 frontend/src/app/instructor/course/[courseID]/page.tsx
 frontend/src/app/instructor/course/[courseID]/studentTable.tsx
 frontend/src/app/instructor/course/page.tsx
+frontend/src/app/instructor/instructorlogic.ts
 frontend/src/app/instructor/layout.tsx
 frontend/src/app/instructor/page.tsx
 frontend/src/app/layout.tsx
 frontend/src/app/page.tsx
+frontend/src/app/student/group/grouplogic.ts
 frontend/src/app/student/group/page.tsx
 frontend/src/app/student/layout.tsx
 frontend/src/app/student/page.tsx
-frontend/src/app/student/survey/[surveyID]/page.tsx
+frontend/src/app/student/studentlogic.ts
+frontend/src/app/student/survey/[groupID]/[courseID]/[courseCode]/page.tsx
 frontend/src/app/student/survey/page.tsx
 frontend/src/app/student/survey/surveyQuestions.ts
 frontend/src/app/test/page.tsx
@@ -99,8 +110,13 @@ frontend/src/components/auth-buttons.tsx
 frontend/src/components/file-drop.tsx
 frontend/src/components/loginbutton.tsx
 frontend/src/components/logoutbutton.tsx
+frontend/src/components/TableSurvey.tsx
+frontend/src/components/ui/AFTable.tsx
 frontend/src/components/ui/button.tsx
 frontend/src/components/ui/card.tsx
+frontend/src/components/ui/Dashboard.tsx
+frontend/src/components/ui/ExportCSV.tsx
+frontend/src/components/ui/FactorTable.tsx
 frontend/src/components/ui/input.tsx
 frontend/src/components/ui/separator.tsx
 frontend/src/components/ui/sheet.tsx
@@ -124,197 +140,691 @@ thing.py
 <files>
 This section contains the contents of the repository's files.
 
-<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
-
-import { useUser } from "@/providers/user-provider";
-import { useRouter, usePathname  } from 'next/navigation'
-import { Group } from "next/dist/shared/lib/router/utils/route-regex";
+<file path="backend/routers/factor.py">
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from models import get_db
+from routers.groups import StudentSurveyBase
+import pandas as pd
 
 
-interface StudentData{
-    email: string;
-    id: number;
-    student_id: number;
-    firstname: string;
-    utorid: number;
-    name: string;
-    lastname: string;
-}
+router = APIRouter()
 
-interface Props{
-  groupID: number;
-}
+class StudentAdjFactor(BaseModel):
+    name: str
+    courseCode: str 
+    utorid: str
+    courseid: int
+    groupNumber: int
+    factorWithSelf: float
+    factorWithoutSelf: float
+    
+
+async def get_factors(courseID: int, db: Session = Depends(get_db)):
+    factordata = db.query(StudentAdjustmentFactor).filter(
+        StudentAdjustmentFactor.courseid == courseID,
+    ).all()
+    return factordata
+
+@router.get('/fetchFactors')
+async def fetch_factors(courseID: int, db: Session = Depends(get_db)):
+    factordata = await get_factors(courseID=courseID, db=db)
+    return factordata
+
+@router.get('/makeCSV')
+async def make_CSV(courseID: int, db: Session = Depends(get_db)):
+    factordata = await get_factors(courseID=courseID, db=db)
+    data_dicts = [obj.__dict__ for obj in factordata]
+    for d in data_dicts:
+        d.pop('_sa_instance_state', None)
+    df = pd.DataFrame(data_dicts)
+    
+    csv_data = df.to_csv(index=False)
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=students.csv"}
+    )
 
 
-const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
-    const url: URL = new URL("http://127.0.0.1:8080/group/groups");
-    url.searchParams.append('groupID', groupID.toString());
+async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    if not includeSelf:
+        data = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+        
+    num_instances = len(data)
+    if num_instances == 0:
+        print("did not fill out yet")
+        return None
 
-    const response = await fetch(url, {
-        method: "GET",
-    });
-    const data: StudentData[] = await response.json();
-    return data;
-}
+    
+    total = 0
+    for instance in data:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    denominator = total / num_instances
 
-const GroupStudentClient = ({ groupID } : Props) => {
-    const { user } = useUser();
-    const [students, setStudents] = useState<StudentData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const pathname = usePathname();
+    return denominator
 
-    const router = useRouter();
+async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
+    if denominator == 0:
+        return None
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
+    
+    if not includeSelf:
+        student_instances = [
+            d for d in student_instances 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+    
+    num_instances = len(student_instances)
 
-    useEffect(() => {
-        if (!user?.id) return;
-        const lecturerId = user.id;
-        const loadData = async () => {
-            try {
-                if (!user){
-                    throw new Error("Uh Oh");
-                }
+
+
+    total = 0
+    if num_instances == 0:
+        return 0
+    for instance in student_instances:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    numerator = total / num_instances
+    factor = numerator / denominator
+    return factor
+
+async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
+    instances = db.query(StudentSurvey).filter(
+        StudentSurvey.course_id == courseID,
+        StudentSurvey.group_id == groupID
+    ).all()
+    
+    # Don't raise exception for empty results - let caller handle it
+    return instances
+
+
+async def getStudentsInGroup(groupID: int, db: Session):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+
+
+
+async def getGroup(groupID: int, db: Session):
+    group: Group = db.query(Group).filter(Group.id == groupID).first()
+    return group.groupNumber
+    
+
+@router.post("/addmultiple/")
+async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
+    try:
+        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
+        groupNumber: int = await getGroup(groupID=groupID, db=db)
+        # Get students in the group
+        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
+        print(f"Found {len(students)} students")
+        
+        if not students:
+            raise HTTPException(status_code=404, detail="No students found in this group")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        results = []
+        skipped_students = []
+        
+        for student in students:
+            print(f"Processing student: {student.name} (ID: {student.student_id})")
+            
+            try:
+                # Calculate denominator without self-evaluation
+                denominatorw = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    includeSelf=True, 
+                    db=db
+                )
                 
-                const studentdata: StudentData[] = await fetchGroups(groupID); 
-                setStudents(studentdata);
+                factorw = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    denominator=denominatorw,
+                    includeSelf=True, 
+                    db=db
+                )
                 
+                denominatorwo = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    includeSelf=False, 
+                    db=db
+                )
                 
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load students in group");
-            } finally {
-                setLoading(false);
+                factorwo = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    denominator=denominatorwo,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Check if we got valid factors
+                if factorwo is None and factorw is None:
+                    print(f"Skipping {student.name} - insufficient evaluation data")
+                    skipped_students.append({
+                        "student_id": student.student_id,
+                        "name": student.name,
+                        "reason": "Insufficient evaluation data"
+                    })
+                    continue
+                
+                # Create Pydantic model
+                data: StudentAdjFactor = StudentAdjFactor(
+                    name=student.name,
+                    courseCode=courseCode,
+                    utorid=student.utorid,
+                    groupNumber=groupNumber,
+                    courseid=courseID,
+                    factorWithoutSelf=factorwo,
+                    factorWithSelf=factorw
+                )
+                
+                # Create database instance
+                db_instance = StudentAdjustmentFactor(**data.model_dump())
+                db.add(db_instance)
+                print(f"Added {student.name} to database session")
+                
+                results.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "factorWithSelf": factorw,
+                    "factorWithoutSelf": factorwo
+                })
+                
+            except Exception as e:
+                print(f"Error processing student {student.name}: {str(e)}")
+                skipped_students.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "reason": str(e)
+                })
+                continue
+        
+        # Only commit if we have successful results
+        if results:
+            db.commit()
+            print("Successfully committed all changes")
+        else:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
+        
+        response = {
+            "message": f"Successfully processed {len(results)} students",
+            "results": results
+        }
+        
+        if skipped_students:
+            response["skipped_students"] = skipped_students
+            response["message"] += f", skipped {len(skipped_students)} students"
+        
+        return response
+        
+    except HTTPException as he:
+        print(f"HTTP Exception: {he.detail}")
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
+
+
+
+
+@router.post('/addData/')
+async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
+    try:
+        print(f"Processing single student data for studentID: {studentID}")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        # Calculate factors
+        denominatorw = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=True, 
+            db=db
+        )
+        
+        factorw = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorw,
+            includeSelf=True, 
+            db=db
+        )
+        
+        denominatorwo = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=False, 
+            db=db
+        )
+        
+        factorwo = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorwo,
+            includeSelf=False, 
+            db=db
+        )
+        
+        # Check if we got valid factors
+        if factorwo is None or factorw is None:
+            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
+        
+        # Get student info
+        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
+        if not student_row:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Create data model
+        data: StudentAdjFactor = StudentAdjFactor(
+            name=student_row.name,
+            courseCode=courseCode,
+            utorid=student_row.utorid,
+            groupNumber=groupID,
+            courseid=courseID,
+            factorWithoutSelf=factorwo,
+            factorWithSelf=factorw
+        )
+        
+        # Save to database
+        db_instance = StudentAdjustmentFactor(**data.model_dump())
+        db.add(db_instance)
+        db.commit()
+        db.refresh(db_instance)
+        
+        return {
+            "message": "Factor added to database successfully",
+            "data": {
+                "student_id": studentID,
+                "name": student_row.name,
+                "factorWithSelf": factorw,
+                "factorWithoutSelf": factorwo
             }
-        };
-
-        loadData();
-    }, [user?.id]);
-
-    if (loading) return <div>Loading students in group...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {students.length > 0 ? (
-                students.map((student) => (
-                    
-                    
-                        <Card key={`${student.id}`} className="hover:shadow-lg transition-shadow">
-                        
-                        <CardHeader>
-                            <CardTitle>{student.name}</CardTitle>
-                            <CardDescription>Group: {groupID}</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                {student.email}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>{student.utorid}</p>
-                        </CardFooter>
-                        
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No groups found for this course, ID = {groupID}</div>
-            )}
-        </div>
-    );
-    
-    
-
-}
-
-export default GroupStudentClient;
+        }
+        
+    except HTTPException as he:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
 </file>
 
-<file path="frontend/src/app/student/group/page.tsx">
-"use client";
+<file path="backend/routers/factor1.py">
+from fastapi import APIRouter, Depends, HTTPException
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from models import get_db
+from routers.groups import StudentSurveyBase
 
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 
-import { useRouter } from "next/navigation";
-const Group = () => {
-  const router = useRouter();
-  return (
-    <div className="p-4">
-      <h2 className="text-lg font-semibold mb-6">
-        You have the following group members to evaluate:
-      </h2>
-      
-      <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
+router = APIRouter()
+
+class StudentAdjFactor(BaseModel):
+    name: str
+    courseCode: str 
+    utorid: str
+    courseid: int
+    groupNumber: int
+    factorWithSelf: float
+    factorWithoutSelf: float
+    
+
+
+async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    if not includeSelf:
+        data = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
         
-        <Card className="flex-1">
-          <button type="button" onClick={() => router.push(`/survey`)}>
-          <CardHeader>
-            <CardTitle>Group Member 1</CardTitle>
-            <CardDescription>Group 2</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>STAC67</p>
-          </CardContent>
-            </button>
-        </Card>
+    num_instances = len(data)
+    if num_instances == 0:
+        print("did not fill out yet")
+        return None
+
+    
+    total = 0
+    for instance in data:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    denominator = total / num_instances
+
+    return denominator
+
+async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
+    if denominator == 0:
+        return None
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
+    
+    if not includeSelf:
+        student_instances = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+    
+    num_instances = len(student_instances)
+
+
+    if num_instances == 0:
+        return None
+    total = 0
+
+    for instance in student_instances:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    numerator = total / num_instances
+    factor = numerator / denominator
+    return factor
+
+async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
+    instances = db.query(StudentSurvey).filter(
+        StudentSurvey.course_id == courseID,
+        StudentSurvey.group_id == groupID
+    ).all()
+    
+    # Don't raise exception for empty results - let caller handle it
+    return instances
+
+
+async def getStudentsInGroup(groupID: int, db: Session):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+
+@router.post("/addmultiple/")
+async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
+    try:
+        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
         
-
-
+        # Get students in the group
+        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
+        print(f"Found {len(students)} students")
         
-        <Card className="flex-1">
-          <button type="button" onClick={() => router.push(`/survey/`)}>
-          <CardHeader>
-            <CardTitle>Group Member 2</CardTitle>
-            <CardDescription>Group: 2</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>STAC67</p>
-          </CardContent>
-          </button>
-        </Card>
-
-       
-        <Card className="flex-1">
-           <button type="button" onClick={() => router.push(`/survey/`)}>
-          <CardHeader>
-            <CardTitle>Group Member 3</CardTitle>
-            <CardDescription>Group: 2</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>STAC67</p>
-          </CardContent>
-          </button>
-        </Card>
+        if not students:
+            raise HTTPException(status_code=404, detail="No students found in this group")
         
-      </div>
-    </div>
-  );
-};
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        results = []
+        skipped_students = []
+        
+        for student in students:
+            print(f"Processing student: {student.name} (ID: {student.student_id})")
+            
+            try:
+                # Calculate denominator without self-evaluation
+                denominatorwo = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Calculate factor without self-evaluation
+                factorwo = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    denominator=denominatorwo,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Calculate denominator with self-evaluation
+                denominatorw = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                # Calculate factor with self-evaluation
+                factorw = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    denominator=denominatorw,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                # Check if we got valid factors
+                if factorwo is None and factorw is None:
+                    print(f"Skipping {student.name} - insufficient evaluation data")
+                    skipped_students.append({
+                        "student_id": student.student_id,
+                        "name": student.name,
+                        "reason": "Insufficient evaluation data"
+                    })
+                    continue
+                
+                # Create Pydantic model
+                data: StudentAdjFactor = StudentAdjFactor(
+                    name=student.name,
+                    courseCode=courseCode,
+                    utorid=student.utorid,
+                    groupNumber=groupID,
+                    courseid=courseID,
+                    factorWithoutSelf=factorwo,
+                    factorWithSelf=factorw
+                )
+                
+                # Create database instance
+                db_instance = StudentAdjustmentFactor(**data.model_dump())
+                db.add(db_instance)
+                print(f"Added {student.name} to database session")
+                
+                results.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "factorWithSelf": factorw,
+                    "factorWithoutSelf": factorwo
+                })
+                
+            except Exception as e:
+                print(f"Error processing student {student.name}: {str(e)}")
+                skipped_students.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "reason": str(e)
+                })
+                continue
+        
+        # Only commit if we have successful results
+        if results:
+            db.commit()
+            print("Successfully committed all changes")
+        else:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
+        
+        response = {
+            "message": f"Successfully processed {len(results)} students",
+            "results": results
+        }
+        
+        if skipped_students:
+            response["skipped_students"] = skipped_students
+            response["message"] += f", skipped {len(skipped_students)} students"
+        
+        return response
+        
+    except HTTPException as he:
+        print(f"HTTP Exception: {he.detail}")
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
 
-export default Group;
+@router.post('/addData/')
+async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
+    try:
+        print(f"Processing single student data for studentID: {studentID}")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        # Calculate factors
+        denominatorw = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=True, 
+            db=db
+        )
+        
+        factorw = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorw,
+            includeSelf=True, 
+            db=db
+        )
+        
+        denominatorwo = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=False, 
+            db=db
+        )
+        
+        factorwo = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorwo,
+            includeSelf=False, 
+            db=db
+        )
+        
+        # Check if we got valid factors
+        if factorwo is None or factorw is None:
+            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
+        
+        # Get student info
+        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
+        if not student_row:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Create data model
+        data: StudentAdjFactor = StudentAdjFactor(
+            name=student_row.name,
+            courseCode=courseCode,
+            utorid=student_row.utorid,
+            groupNumber=groupID,
+            courseid=courseID,
+            factorWithoutSelf=factorwo,
+            factorWithSelf=factorw
+        )
+        
+        # Save to database
+        db_instance = StudentAdjustmentFactor(**data.model_dump())
+        db.add(db_instance)
+        db.commit()
+        db.refresh(db_instance)
+        
+        return {
+            "message": "Factor added to database successfully",
+            "data": {
+                "student_id": studentID,
+                "name": student_row.name,
+                "factorWithSelf": factorw,
+                "factorWithoutSelf": factorwo
+            }
+        }
+        
+    except HTTPException as he:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
+</file>
+
+<file path="frontend/src/components/ui/AFTable.tsx">
+import { useState, useEffect } from "react";
+
+const AdjustmentFactorTable = () => {
+
+}
+
+export default AdjustmentFactorTable;
 </file>
 
 <file path=".gitattributes">
@@ -437,6 +947,67 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     ${downgrades if downgrades else "pass"}
+</file>
+
+<file path="backend/application/cache.py">
+from fastapi import FastAPI
+from datetime import datetime, timedelta
+import asyncio
+from typing import Optional, Any
+
+class AppCache:
+    def __init__(self, max_size: int = 1000):
+        self._cache = {}
+        self._access_times = {}
+        self._max_size = max_size
+    
+    def get(self, key: str) -> Optional[Any]:
+        if key in self._cache:
+            value, expiry = self._cache[key]
+            if datetime.now() < expiry:
+                self._access_times[key] = datetime.now()
+                return value
+            else:
+                self._evict(key)
+        return None
+    
+    def set(self, key: str, value: Any, ttl_seconds: int = 300):
+        if len(self._cache) >= self._max_size:
+            self._evict_lru()
+        
+        expiry = datetime.now() + timedelta(seconds=ttl_seconds)
+        self._cache[key] = (value, expiry)
+        self._access_times[key] = datetime.now()
+    
+    def _evict(self, key: str):
+        self._cache.pop(key, None)
+        self._access_times.pop(key, None)
+    
+    def _evict_lru(self):
+        if not self._access_times:
+            return
+        oldest_key = min(self._access_times.keys(), key=lambda k: self._access_times[k])
+        self._evict(oldest_key)
+
+# Global cache instance
+cache = AppCache(max_size=5000)  
+
+# EXAMPLE USAGE:
+# @app.get("/users/{user_id}")
+# async def get_user(user_id: int):
+#     cache_key = f"user:{user_id}"
+    
+#     cached_user = cache.get(cache_key)
+#     if cached_user:
+#         return cached_user
+    
+#     # Fetch from database
+#     user_data = await get_user_from_db(user_id)
+    
+#     # Cache for 10 minutes
+#     cache.set(cache_key, user_data, ttl_seconds=600)
+    
+#     return user_data
 </file>
 
 <file path="backend/application/config.py">
@@ -640,28 +1211,87 @@ def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
 </file>
 
-<file path="backend/routers/courses.py">
+<file path="backend/routers/export.py">
+import pandas as pd
+from ..application.cache import cache;
+from .courses import get_students_in_course_helper
+from models import get_db
+from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
 from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
-from io import BytesIO
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-
-from starlette.concurrency import run_in_threadpool
-import pandas as pd
-from schemas import StudentCreate
-from models import get_db
-
-router = APIRouter();
 
 
-#get students enrolled in this course
-@router.get("/course/students")
-async def get_students_in_course(courseID: str = Query(...), db: Session = Depends(get_db)):
-    #Get student ids 
-    student_course_rows = db.query(StudentCourse).filter(StudentCourse.course_id == courseID).all()
-    student_ids = [row.student_id for row in student_course_rows]
-    students = db.query(Student).filter(Student.id.in_(student_ids)).all()
+async def getCSVData(courseID: int, db: Session = Depends(get_db)):
+    enrolledin_key: str = f"enrolledin:{courseID}" # Key to access students enrolled in course
+    result = {
+        "Student Name": [],
+        "Course": [],
+        "UTORID": [],
+        "Group Number": [],
+        "AF With": [],
+        "AF Without": []
+    }
+    #Get the group ids, then from that get students in groups then set the data, then convert to csv
+    # group_key = f"course:{courseID}"
+    # group_ids = cache.get(group_key)
+    groups = await getGroups(courseID=courseID, db=db)
+
+    for group in groups:
+        students = await getStudents(courseID=courseID, db=db)
+        student_names = [student['name'] for student in students]
+        student_utorids = [student['utorid'] for student in students]
+        group_numbers = [group['groupNumber']] * len(students)
+        
+        #get students in group
+
+
+    student_ids = cache.get(enrolledin_key)
+
+    if student_ids == None:
+        cache_data = get_students_in_course_helper(courseID=courseID, db=db)
+        cache.set(key=enrolledin_key, value=cache_data, ttl_seconds=600)
+        student_ids = cache.get(enrolledin_key)
+    
+    for studentID in student_ids:
+        student_key = f"student:{studentID}"
+        student_data = cache.get(key=student_key)
+
+        if student_data == None:
+            pass
+        result["Student Name"].append(student_data["name"])
+        result["UTORID"].append(student_data["utorid"])
+
+
+
+
+        
+    df = pd.DataFrame(result)
+    csvfile = df.to_csv('adjustmentfactors.csv', index=False) 
+    return csvfile
+
+
+async def getGroups(courseID: int, db: Session = Depends(get_db)):
+    course = db.query(Course).filter(Course.id == courseID).first()
+    groups = db.query(Group).filter(Group.courseCode == course.code).all()
+    return groups
+
+async def getStudents(groupID: int, db: Session = Depends(get_db)):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
     return students
 </file>
 
@@ -679,53 +1309,6 @@ async def protected_route(user: dict = Depends(validate_token)):
             "sub": user.get("sub"),
             "email": user.get("email")
         }
-    }
-</file>
-
-<file path="backend/routers/users.py">
-# Endpoint to create user in PostgreSQL
-from fastapi import APIRouter, Depends, HTTPException, Body
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, get_db
-from sqlalchemy.orm import Session
-
-
-router = APIRouter(prefix="/users", tags=["users"])
-
-
-
-
-@router.post("")
-async def create_user(payload: dict = Body(...), db: Session = Depends(get_db)):
-    auth0_id = payload["sub"]
-    
-    # Check if user exists
-    user = db.query(User).filter(User.auth0_id == auth0_id).first()
-    if user:
-        return user
-    
-    # Create new user
-    new_user = User(
-        auth0_id=auth0_id, 
-        email=payload["email"],
-        name=payload.get("name", "")
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
-
-@router.get("/by-auth0/{auth0_sub}")
-async def getUserByAuth0(auth0_sub: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.auth0_id == auth0_sub).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    return {
-        "id": user.id,
-        "name": user.name,
-        "email": user.email,
-        "auth0_sub": user.auth0_id,
-        "role": user.role
     }
 </file>
 
@@ -983,20 +1566,252 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 </file>
 
-<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/page.tsx">
-import GroupStudentClient from './GroupStudentClient';
-const CoursePage = async ({ params }: { params: { groupID: string } }) => {
-  // Convert to number if needed
-  const numericGroupID = parseInt(params.groupID);
+<file path="frontend/src/app/api/axiosClient.ts">
+import axios from "axios";
 
-  return (
-    <div>
-        <GroupStudentClient groupID={numericGroupID}/>
-    </div>
-  );
+
+const AxiosClient = axios.create({
+  baseURL: 'http://127.0.0.1:8080/', // Your API base URL
+  timeout: 10000, // Optional: set timeout
+});
+
+
+AxiosClient.interceptors.request.use(
+  (config) => {
+    // Get token from localStorage, Redux store, or context
+    const token = localStorage.getItem('authToken');
+    
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+export default AxiosClient;
+</file>
+
+<file path="frontend/src/app/authRedirect/authlogic.ts">
+import { User } from "lucide-react";
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  auth0_id?: string;
+  role: string;
+}
+
+export class AuthService{
+    async getUserRole(sub: string): Promise<string | null>{
+        
+        const response = await fetch(`http://127.0.0.1:8080/users/by-auth0/${sub}`);
+        const result: User = await response.json();
+
+        return result.role;
+    }
+}
+</file>
+
+<file path="frontend/src/app/authRedirect/page.tsx">
+'use client';
+import { useEffect, useState } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
+import { useRouter } from "next/navigation";
+import { useUser } from "@/providers/user-provider";
+
+const AuthRedirect = () => {
+    const [isRedirecting, setIsRedirecting] = useState(false);
+    const { isAuthenticated, isLoading: auth0Loading } = useAuth0();
+    const { user, loading: userLoading, error } = useUser(); // Use context instead of API call
+    const router = useRouter();
+
+    useEffect(() => {
+        const handleRedirect = async () => {
+            // Wait for both Auth0 and user context to finish loading
+            if (auth0Loading || userLoading || isRedirecting) {
+                return;
+            }
+
+            if (!isAuthenticated) {
+                router.push('/');
+                return;
+            }
+
+            if (user) {
+                try {
+                    setIsRedirecting(true);
+                    console.log('User role:', user.role);
+
+                    switch (user.role) {
+                        case 'instructor':
+                            router.push('/instructor');
+                            break;
+                        case 'student':
+                            router.push('/student');
+                            break;
+                        default:
+                            router.push('/student');
+                    }
+                } catch (error) {
+                    console.error('Error during redirect:', error);
+                    // Fallback to student page on error
+                    router.push('/student');
+                } finally {
+                    setIsRedirecting(false);
+                }
+            } else if (error) {
+                console.error('User context error:', error);
+                // Handle error case - maybe redirect to error page or fallback
+                router.push('/student');
+            }
+        };
+
+        handleRedirect();
+    }, [user, isAuthenticated, auth0Loading, userLoading, router, isRedirecting, error]);
+
+    // Show loading state while Auth0 is loading, user is loading, or while redirecting
+    if (auth0Loading || userLoading || isRedirecting) {
+        return (
+            <div className="flex justify-center items-center min-h-screen">
+                <div className="animate-pulse">
+                    {auth0Loading ? 'Authenticating...' : 
+                     userLoading ? 'Loading user data...' : 
+                     'Redirecting...'}
+                </div>
+            </div>
+        );
+    }
+
+    return null;
 };
 
-export default CoursePage;
+export default AuthRedirect;
+</file>
+
+<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { useAuth0 } from "@auth0/auth0-react";
+
+import { useUser } from "@/providers/user-provider";
+import { useRouter, usePathname  } from 'next/navigation'
+import { Group } from "next/dist/shared/lib/router/utils/route-regex";
+
+
+interface StudentData{
+    email: string;
+    id: number;
+    student_id: number;
+    firstname: string;
+    utorid: number;
+    name: string;
+    lastname: string;
+}
+
+interface Props{
+  groupID: number;
+}
+
+
+const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
+    const url: URL = new URL("http://127.0.0.1:8080/group/groups");
+    url.searchParams.append('groupID', groupID.toString());
+
+    const response = await fetch(url, {
+        method: "GET",
+    });
+    const data: StudentData[] = await response.json();
+    return data;
+}
+
+const GroupStudentClient = ({ groupID } : Props) => {
+    const { user } = useUser();
+    const [students, setStudents] = useState<StudentData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const pathname = usePathname();
+
+    const router = useRouter();
+
+    useEffect(() => {
+        if (!user?.id) return;
+        const lecturerId = user.id;
+        const loadData = async () => {
+            try {
+                if (!user){
+                    throw new Error("Uh Oh");
+                }
+                
+                const studentdata: StudentData[] = await fetchGroups(groupID); 
+                setStudents(studentdata);
+                
+                
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load students in group");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, [user?.id]);
+
+    if (loading) return <div>Loading students in group...</div>;
+    if (error) return <div>Error: {error}</div>;
+
+
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {students.length > 0 ? (
+                students.map((student) => (
+                    
+                    
+                        <Card key={`${student.id}`} className="hover:shadow-lg transition-shadow">
+                        
+                        <CardHeader>
+                            <CardTitle>{student.name}</CardTitle>
+                            <CardDescription>Group: {groupID}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                {student.email}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>{student.utorid}</p>
+                        </CardFooter>
+                        
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No groups found for this course, ID = {groupID}</div>
+            )}
+        </div>
+    );
+    
+    
+
+}
+
+export default GroupStudentClient;
 </file>
 
 <file path="frontend/src/app/instructor/course/[courseID]/columns.tsx">
@@ -1101,105 +1916,8 @@ const CoursePageClient =  ({ courseId }: Props) => {
 export default CoursePageClient;
 </file>
 
-<file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
-import { useUser } from "@/providers/user-provider";
-import { useRouter, usePathname } from 'next/navigation'
-import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
-
-interface GroupData {
-  courseCode: string;
-  courseID: string;  // Consider renaming to courseId for consistency
-  groupNumber: number;
-  id: number;
-}
-
-type GroupsProps = {
-  courseId: number;
-};
-
-const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
-  const url = new URL("http://127.0.0.1:8080/group/getgroups");
-  url.searchParams.append('courseID', courseID.toString());
-  
-  const response = await fetch(url, { method: "GET" });
-  return await response.json();
-}
-
-const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
-  const { user } = useUser();
-  const [groups, setGroups] = useState<GroupData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const router: AppRouterInstance = useRouter();
-  const pathname: string = usePathname();
-
-  useEffect(() => {
-    if (!user?.id) return;
-    
-    const loadData = async () => {
-      try {
-        const groupdata = await fetchGroups(courseId);
-        setGroups(groupdata);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load groups");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, [user?.id, courseId]);  // Added courseId to dependencies
-
-  if (loading) return <div>Loading groups...</div>;
-  if (error) return <div>Error: {error}</div>;
-
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-      {groups.length > 0 ? (
-        groups.map((group) => (
-          <Card key={group.id} className="hover:shadow-lg transition-shadow">
-            <button 
-              type="button" 
-              onClick={() => router.push(`${pathname}/${group.id}`)}
-              className="w-full text-left"
-            >
-              <CardHeader>
-                <CardTitle>{group.courseCode}</CardTitle>
-                <CardDescription>Group: {group.groupNumber}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p>Course ID: {group.courseID}</p>
-              </CardContent>
-              <CardFooter>
-                <p>Group ID: {group.id}</p>
-              </CardFooter>
-            </button>
-          </Card>
-        ))
-      ) : (
-        <div className="text-gray-500">
-          No groups found for course ID: {courseId}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default Groups;
-</file>
-
 <file path="frontend/src/app/instructor/course/[courseID]/page.tsx">
+import Dashboard from '@/components/ui/Dashboard';
 import CoursePageClient from './CoursePageClient';
 import Groups from './GroupClient';
 const CoursePage = async ({ params }: { params: { courseID: string } }) => {
@@ -1210,7 +1928,7 @@ const CoursePage = async ({ params }: { params: { courseID: string } }) => {
     <div>
       <Groups courseId={numericCourseId}/>
       <CoursePageClient courseId={numericCourseId} />
-      
+      <Dashboard courseID={numericCourseId}/>
     </div>
   );
 };
@@ -1301,6 +2019,75 @@ export function DataTable<TData, TValue>({
 }
 </file>
 
+<file path="frontend/src/app/instructor/instructorlogic.ts">
+import { group } from "console";
+import AxiosClient from "../api/axiosClient"; 
+
+export class InstructorService{
+
+    async getStudents(groupID: number){
+        try{
+            const response = await AxiosClient.get("/group/groups/", {
+                params: {
+                    groupID: groupID
+                }
+            });
+            return response.data;
+        } catch(error){
+            console.error('Could not get the students in the specified group', error);
+            return null;
+        }
+    }
+
+
+    async getStudentFactors(courseID: number){
+        try{
+            const response = await AxiosClient.get("/factor/fetchFactors", {
+                params: {
+                    courseID: courseID,
+                }
+            });
+            return response.data;
+        } catch(error){
+            console.error('Could not get the factor for the specified student', error);
+            return null;
+
+        }
+    }
+
+    async downloadCSV(courseID: number){
+        try{
+            const response = await AxiosClient.get("/factor/makeCSV", {
+                params: {
+                    courseID: courseID,
+                },
+                responseType: 'blob'
+            });
+            const blob = new Blob([response.data], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `course_${courseID}_students.csv`;
+            document.body.appendChild(link);
+            link.click();
+            
+            // Cleanup
+            link.remove();
+            URL.revokeObjectURL(url);
+            
+            return { success: true };
+        } catch(error){
+            console.error('Could not download the csv file', error);
+            return null;
+
+        }
+    }
+}
+
+
+export const instructorService = new InstructorService();
+</file>
+
 <file path="frontend/src/app/instructor/layout.tsx">
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -1316,6 +2103,78 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     </>
   )
 }
+</file>
+
+<file path="frontend/src/app/student/group/page.tsx">
+"use client";
+
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+
+import { useRouter } from "next/navigation";
+const Group = () => {
+  const router = useRouter();
+  return (
+    <div className="p-4">
+      <h2 className="text-lg font-semibold mb-6">
+        You have the following group members to evaluate:
+      </h2>
+      
+      <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
+        
+        <Card className="flex-1">
+          <button type="button" onClick={() => router.push(`/survey`)}>
+          <CardHeader>
+            <CardTitle>Group Member 1</CardTitle>
+            <CardDescription>Group 2</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p>STAC67</p>
+          </CardContent>
+            </button>
+        </Card>
+        
+
+
+        
+        <Card className="flex-1">
+          <button type="button" onClick={() => router.push(`/survey/`)}>
+          <CardHeader>
+            <CardTitle>Group Member 2</CardTitle>
+            <CardDescription>Group: 2</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p>STAC67</p>
+          </CardContent>
+          </button>
+        </Card>
+
+       
+        <Card className="flex-1">
+           <button type="button" onClick={() => router.push(`/survey/`)}>
+          <CardHeader>
+            <CardTitle>Group Member 3</CardTitle>
+            <CardDescription>Group: 2</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p>STAC67</p>
+          </CardContent>
+          </button>
+        </Card>
+        
+      </div>
+    </div>
+  );
+};
+
+export default Group;
 </file>
 
 <file path="frontend/src/app/student/layout.tsx">
@@ -1335,132 +2194,139 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 }
 </file>
 
-<file path="frontend/src/app/student/page.tsx">
-"use client";
+<file path="frontend/src/app/student/survey/[groupID]/[courseID]/[courseCode]/page.tsx">
+'use client'
 
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-
-import { useRouter } from "next/navigation";
-const Student = () => {
-  const router = useRouter();
-  return (
-    <div className="p-4">
-      <h2 className="text-lg font-semibold mb-6">
-        You have the following surveys to complete:
-      </h2>
-      
-      <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
-        <button type="button" onClick={() => router.push(`student/course/`)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>STAC67</CardTitle>
-            <CardDescription>Group 2</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Regression Analysis</p>
-          </CardContent>
-        </Card>
-        </button>
-
-
-        <button type="button" onClick={() => router.push(``)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>CSCC01</CardTitle>
-            <CardDescription>Group: 4</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Intro to Software Engineering</p>
-          </CardContent>
-        </Card>
-        </button>
-
-        <button type="button" onClick={() => router.push(``)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>CSCC01</CardTitle>
-            <CardDescription>Group: 4</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Intro to Software Engineering</p>
-          </CardContent>
-        </Card>
-        </button>
-
-      </div>
-    </div>
-  );
-};
-
-export default Student;
-</file>
-
-<file path="frontend/src/app/student/survey/[surveyID]/page.tsx">
 import Survey from '@/components/ui/Survey';
-import { surveyQuestions } from '../surveyQuestions';
-export default function SurveyPage() {
+import { surveyQuestions } from '../../../surveyQuestions';
+import { studentService } from '../../../../studentlogic';
+import { useEffect, useState } from 'react';
+import { Student, Group, SurveyInstance } from '../../../../studentlogic';
+import { useUser } from '@/providers/user-provider';
+
+interface PageProps {
+  params: {
+    groupID: string;
+    courseID: number;
+    courseCode: string;
+  };
+}
+
+
+export default function SurveyPage({ params } : PageProps) {
+
+  const [students, setStudents] = useState<Student[]>([]);
+  const [isloading, setIsLoading] = useState<boolean>(true);
+  const [studentNum, setStudentNum] = useState<number>(0);
+  const { user, loading } = useUser();
+  
+
+  useEffect(()=> {
+    const getStudentsInGroup = async () => {
+      const data: Student[] = await studentService.getStudentsInGroup(parseInt(params.groupID));
+      setStudents(data || []);
+  
+    }
+
+    getStudentsInGroup();
+    
+  }, [])
+
+  useEffect( ()=> {
+    const getStudentID = async () => {
+      if (!user?.email) {
+        console.log('User email not available yet');
+        return;
+      }
+
+      try {
+        console.log('Fetching student ID for email:', user.email);
+        const studentID: number = await studentService.getStudentID(user.email);
+        console.log('Student ID retrieved:', studentID);
+        setStudentNum(studentID);
+      } catch (error) {
+        console.error('Failed to fetch student ID:', error);
+      }
+      
+    };
+    getStudentID();
+
+  }, [user?.email])
+
+  useEffect(() => {
+    // Set loading to false when both user and students are loaded
+    if (!loading && students.length >= 0) { // >= 0 to handle empty arrays
+      setIsLoading(false);
+    }
+  }, [loading, students]);
+
+
+
+
+  if (loading || isloading) {
+    return (
+      <main className="min-h-screen bg-gray-50 py-12">
+        <div className="container mx-auto px-4">
+          <div className="text-center">Loading students...</div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-gray-50 py-12">
+        <div className="container mx-auto px-4">
+          <div className="text-center text-gray-600">
+            Please log in to access the survey.
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (students.length === 0) {
+    return (
+      <main className="min-h-screen bg-gray-50 py-12">
+        <div className="container mx-auto px-4">
+          <div className="text-center text-gray-600">
+            No students found in this group.
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-gray-50 py-12">
       <div className="container mx-auto px-4">
-        <Survey questions={surveyQuestions} />
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Group Survey
+          </h1>
+          <p className="text-gray-600">
+            Complete the survey for each student in the group
+          </p>
+        </div>
+        
+        <div className="space-y-8">
+          
+            
+              <Survey 
+                questions={surveyQuestions} 
+                groupID={parseInt(params.groupID)}
+                studentID={studentNum}
+                courseID={params.courseID}
+                courseCode={params.courseCode}
+                // studentId={student.id}
+                // studentName={student.name}
+              />
+
+        </div>
       </div>
     </main>
   );
 }
-</file>
-
-<file path="frontend/src/app/student/survey/page.tsx">
-import Survey from '@/components/ui/Survey';
-import { surveyQuestions } from './surveyQuestions';
-export default function SurveyPage() {
-  return (
-    <main className="min-h-screen bg-gray-50 py-12 content-center">
-      <div className="container mx-auto px-4 content-center">
-        <Survey questions={surveyQuestions} />
-      </div>
-    </main>
-  );
-}
-</file>
-
-<file path="frontend/src/app/student/survey/surveyQuestions.ts">
-export interface Question {
-  id: string;
-  text: string;
-  subtext: string;
-}
-
-export const surveyQuestions: Question[] = [
-  {
-    id: 'q1',
-    text: 'Contribution to the Team Work.',
-    subtext: 'Consistently completed the share of the team’s tasks on time. Took initiative to help the team achieve its goals. Made meaningful contributions to team discussions and planning.'
-    
-  },
-  {
-    id: 'q2',
-    text: 'Interacting with Teammates',
-    subtext: 'Listened respectfully to others’ ideas and perspectives. Communicated clearly and effectively with team members. Helped create a positive and inclusive team atmosphere.'
-  },
-  {
-    id: 'q3',
-    text: 'Keeping the Team on Track',
-    subtext: 'Listened respectfully to others’ ideas and perspectives. Communicated clearly and effectively with team members. Helped create a positive and inclusive team atmosphere.'
-  },
-  {
-    id: 'q4',
-    text: 'Expecting Quality',
-    subtext: 'Helped the team stay focused on goals and deadlines. Reminded others of responsibilities when needed. Contributed to setting and maintaining a clear plan of action.'
-  }
-];
 </file>
 
 <file path="frontend/src/app/test/page.tsx">
@@ -1643,6 +2509,330 @@ const LogoutButton = () => {
 export default LogoutButton;
 </file>
 
+<file path="frontend/src/components/TableSurvey.tsx">
+'use client'
+
+import { useEffect, useState } from "react";
+import { Plus, Trash2, Edit2, Save, X } from 'lucide-react';
+
+export interface TableSurveyProps{
+    
+}
+
+
+const SurveyTable = () => {
+  const [questions, setQuestions] = useState([
+    'Communication Skills',
+    'Technical Expertise',
+    'Teamwork',
+    'Leadership Potential'
+  ]);
+  
+  const [people, setPeople] = useState([
+    'John Smith',
+    'Sarah Johnson',
+    'Mike Chen'
+  ]);
+  
+  const [responses, setResponses] = useState({});
+  const [editingQuestion, setEditingQuestion] = useState(null);
+  const [editingPerson, setEditingPerson] = useState(null);
+  const [newQuestionText, setNewQuestionText] = useState('');
+  const [newPersonText, setNewPersonText] = useState('');
+
+  const getResponseKey = (person, question) => `${person}-${question}`;
+
+  const handleResponseChange = (person, question, value) => {
+    const key = getResponseKey(person, question);
+    setResponses(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  const addQuestion = () => {
+    const newQuestion = `Question ${questions.length + 1}`;
+    setQuestions(prev => [...prev, newQuestion]);
+  };
+
+  const addPerson = () => {
+    const newPerson = `Person ${people.length + 1}`;
+    setPeople(prev => [...prev, newPerson]);
+  };
+
+  const removeQuestion = (index) => {
+    const questionToRemove = questions[index];
+    setQuestions(prev => prev.filter((_, i) => i !== index));
+    // Clean up responses for removed question
+    setResponses(prev => {
+      const newResponses = { ...prev };
+      Object.keys(newResponses).forEach(key => {
+        if (key.endsWith(`-${questionToRemove}`)) {
+          delete newResponses[key];
+        }
+      });
+      return newResponses;
+    });
+  };
+
+  const removePerson = (index) => {
+    const personToRemove = people[index];
+    setPeople(prev => prev.filter((_, i) => i !== index));
+    // Clean up responses for removed person
+    setResponses(prev => {
+      const newResponses = { ...prev };
+      Object.keys(newResponses).forEach(key => {
+        if (key.startsWith(`${personToRemove}-`)) {
+          delete newResponses[key];
+        }
+      });
+      return newResponses;
+    });
+  };
+
+  const saveQuestionEdit = (index) => {
+    const oldQuestion = questions[index];
+    setQuestions(prev => prev.map((q, i) => i === index ? newQuestionText : q));
+    
+    // Update response keys
+    if (oldQuestion !== newQuestionText) {
+      setResponses(prev => {
+        const newResponses = { ...prev };
+        Object.keys(newResponses).forEach(key => {
+          if (key.endsWith(`-${oldQuestion}`)) {
+            const person = key.split(`-${oldQuestion}`)[0];
+            const newKey = getResponseKey(person, newQuestionText);
+            newResponses[newKey] = newResponses[key];
+            delete newResponses[key];
+          }
+        });
+        return newResponses;
+      });
+    }
+    
+    setEditingQuestion(null);
+    setNewQuestionText('');
+  };
+
+  const savePersonEdit = (index) => {
+    const oldPerson = people[index];
+    setPeople(prev => prev.map((p, i) => i === index ? newPersonText : p));
+    
+    // Update response keys
+    if (oldPerson !== newPersonText) {
+      setResponses(prev => {
+        const newResponses = { ...prev };
+        Object.keys(newResponses).forEach(key => {
+          if (key.startsWith(`${oldPerson}-`)) {
+            const question = key.substring(`${oldPerson}-`.length);
+            const newKey = getResponseKey(newPersonText, question);
+            newResponses[newKey] = newResponses[key];
+            delete newResponses[key];
+          }
+        });
+        return newResponses;
+      });
+    }
+    
+    setEditingPerson(null);
+    setNewPersonText('');
+  };
+
+  const exportData = () => {
+    const data = {
+      questions,
+      people,
+      responses
+    };
+    console.log('Survey Data:', data);
+    alert('Survey data exported to console. Check browser developer tools.');
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto bg-white">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold text-gray-800 mb-2">Survey Evaluation Table</h1>
+        <p className="text-gray-600">Evaluate people across different criteria. Click cells to rate, edit names by clicking the edit icon.</p>
+      </div>
+
+      <div className="mb-4 flex gap-2">
+        <button 
+          onClick={addQuestion}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+        >
+          <Plus size={16} />
+          Add Question
+        </button>
+        <button 
+          onClick={addPerson}
+          className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+        >
+          <Plus size={16} />
+          Add Person
+        </button>
+        <button 
+          onClick={exportData}
+          className="flex items-center gap-2 px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors"
+        >
+          Export Data
+        </button>
+      </div>
+
+      <div className="overflow-x-auto border rounded-lg shadow-sm">
+        <table className="w-full border-collapse bg-white">
+          <thead>
+            <tr className="bg-gray-50">
+              <th className="border p-3 text-left font-semibold text-gray-700 min-w-[150px]">
+                Person / Question
+              </th>
+              {questions.map((question, index) => (
+                <th key={question} className="border p-3 text-center font-semibold text-gray-700 min-w-[140px]">
+                  <div className="flex items-center justify-center gap-2">
+                    {editingQuestion === index ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="text"
+                          value={newQuestionText}
+                          onChange={(e) => setNewQuestionText(e.target.value)}
+                          className="px-2 py-1 border rounded text-sm w-24"
+                          onKeyPress={(e) => e.key === 'Enter' && saveQuestionEdit(index)}
+                        />
+                        <button
+                          onClick={() => saveQuestionEdit(index)}
+                          className="text-green-600 hover:text-green-800"
+                        >
+                          <Save size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingQuestion(null);
+                            setNewQuestionText('');
+                          }}
+                          className="text-red-600 hover:text-red-800"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="text-sm">{question}</span>
+                        <button
+                          onClick={() => {
+                            setEditingQuestion(index);
+                            setNewQuestionText(question);
+                          }}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        {questions.length > 1 && (
+                          <button
+                            onClick={() => removeQuestion(index)}
+                            className="text-red-400 hover:text-red-600"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {people.map((person, personIndex) => (
+              <tr key={person} className="hover:bg-gray-50">
+                <td className="border p-3 font-medium text-gray-700 bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    {editingPerson === personIndex ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="text"
+                          value={newPersonText}
+                          onChange={(e) => setNewPersonText(e.target.value)}
+                          className="px-2 py-1 border rounded text-sm flex-1"
+                          onKeyPress={(e) => e.key === 'Enter' && savePersonEdit(personIndex)}
+                        />
+                        <button
+                          onClick={() => savePersonEdit(personIndex)}
+                          className="text-green-600 hover:text-green-800"
+                        >
+                          <Save size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingPerson(null);
+                            setNewPersonText('');
+                          }}
+                          className="text-red-600 hover:text-red-800"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span>{person}</span>
+                        <button
+                          onClick={() => {
+                            setEditingPerson(personIndex);
+                            setNewPersonText(person);
+                          }}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        {people.length > 1 && (
+                          <button
+                            onClick={() => removePerson(personIndex)}
+                            className="text-red-400 hover:text-red-600"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </td>
+                {questions.map((question) => (
+                  <td key={question} className="border p-3 text-center">
+                    <select
+                      value={responses[getResponseKey(person, question)] || ''}
+                      onChange={(e) => handleResponseChange(person, question, e.target.value)}
+                      className="w-full px-2 py-1 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="">Select...</option>
+                      <option value="1">1 - Poor</option>
+                      <option value="2">2 - Below Average</option>
+                      <option value="3">3 - Average</option>
+                      <option value="4">4 - Good</option>
+                      <option value="5">5 - Excellent</option>
+                    </select>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 text-sm text-gray-600">
+        <p><strong>Instructions:</strong></p>
+        <ul className="list-disc list-inside mt-1 space-y-1">
+          <li>Click the dropdown in each cell to rate a person on that criteria (1-5 scale)</li>
+          <li>Use the edit icon next to names to rename questions or people</li>
+          <li>Add new questions or people using the buttons above the table</li>
+          <li>Remove items using the trash icon (minimum 1 question and 1 person required)</li>
+          <li>Export your data to see all responses in the browser console</li>
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+export default SurveyTable;
+</file>
+
 <file path="frontend/src/components/ui/button.tsx">
 import * as React from "react"
 import { Slot } from "@radix-ui/react-slot"
@@ -1798,6 +2988,44 @@ export {
   CardDescription,
   CardContent,
 }
+</file>
+
+<file path="frontend/src/components/ui/ExportCSV.tsx">
+'use client'
+import { Student } from "@/app/student/studentlogic";
+import { instructorService } from "@/app/instructor/instructorlogic";
+import { StudentFactors } from "./Dashboard";
+import { Button } from "./button";
+import { useState, useEffect } from "react";
+
+interface Props {
+  courseID: number;
+}
+
+const ExportCSV = ({ courseID }: Props) => {
+    const [isLoading, setIsLoading] = useState(false);
+
+    const handleExport = async () => {
+        setIsLoading(true);
+        try {
+            await instructorService.downloadCSV(courseID);
+            // Success! File should be downloaded
+        } catch(error) {
+            console.error("Failed to download CSV:", error);
+            alert("Failed to download CSV. Please try again.");
+        } finally {
+            setIsLoading(false);
+        }
+    }
+
+    return (
+        <Button onClick={handleExport} disabled={isLoading}>
+            {isLoading ? "Downloading..." : "Download CSV"}
+        </Button>
+    )
+}
+
+export default ExportCSV;
 </file>
 
 <file path="frontend/src/components/ui/input.tsx">
@@ -2742,103 +3970,6 @@ function Skeleton({ className, ...props }: React.ComponentProps<"div">) {
 export { Skeleton }
 </file>
 
-<file path="frontend/src/components/ui/Survey.tsx">
-'use client';
-import { useState } from 'react';
-
-interface Question {
-  id: string;
-  text: string;
-  subtext: string;
-}
-
-interface Answers {
-  [key: string]: number; // Question ID to selected value
-}
-
-interface OptionButtonProps {
-  value: number;
-  selected: boolean;
-  onClick: () => void;
-}
-
-interface SurveyProps {
-  questions: Question[];
-}
-
-const OptionButton = ({ value, selected, onClick }: OptionButtonProps) => (
-  <button
-    type="button"
-    onClick={onClick}
-    className={`w-12 h-12 rounded-full flex items-center justify-center transition-all
-      ${selected 
-        ? 'bg-blue-600 text-white transform scale-110' 
-        : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
-      }`}
-    aria-pressed={selected}
-  >
-    {value}
-  </button>
-);
-
-const Survey = ({ questions }: SurveyProps) => {
-  const [answers, setAnswers] = useState<Answers>({});
-  const [submitted, setSubmitted] = useState(false);
-
-  const handleSelect = (questionId: string, value: number) => {
-    setAnswers(prev => ({ ...prev, [questionId]: value }));
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    console.log('Survey responses:', answers);
-    setSubmitted(true);
-    // Add API submission logic here
-  };
-
-  if (submitted) {
-    return (
-      <div className="p-4 bg-green-100 text-green-800 rounded-lg text-center">
-        Thank you for completing the survey!
-      </div>
-    );
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="max-w-xl mx-auto p-6 bg-white rounded-lg shadow-md content-center">
-      <h2 className="text-2xl font-bold mb-6 text-center">Survey</h2>
-      
-      {questions.map((question) => (
-        <fieldset key={question.id} className="mb-8 p-4 border rounded-lg">
-          <legend className="text-lg font-semibold mb-3">{question.text}</legend>
-          <p>{question.subtext}</p>
-          <div className="flex justify-between">
-            {[1, 2, 3, 4, 5].map((value) => (
-              <OptionButton 
-                key={value}
-                value={value}
-                selected={answers[question.id] === value}
-                onClick={() => handleSelect(question.id, value)}
-              />
-            ))}
-          </div>
-        </fieldset>
-      ))}
-
-      <button 
-        type="submit" 
-        className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-        disabled={Object.keys(answers).length !== questions.length}
-      >
-        Submit Survey
-      </button>
-    </form>
-  );
-};
-
-export default Survey;
-</file>
-
 <file path="frontend/src/components/ui/table.tsx">
 "use client"
 
@@ -3103,135 +4234,6 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 }
 </file>
 
-<file path="frontend/src/providers/user-provider.tsx">
-import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { useAuth0 } from "@auth0/auth0-react";
-
-interface User {
-  id: number;
-  name: string;
-  email: string;
-  auth0_id?: string;
-}
-
-interface UserContextType {
-  user: User | null;
-  loading: boolean;
-  error: string | null;
-}
-
-const UserContext = createContext<UserContextType>({
-  user: null,
-  loading: true,
-  error: null,
-});
-
-export const UserProvider = ({ children }: { children: ReactNode }) => {
-  const { user: auth0User, isAuthenticated, getAccessTokenSilently } = useAuth0();
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const syncAndLoadUser = async () => {
-      console.log("Starting user sync process...");
-      console.log(`Auth0 auth status: ${isAuthenticated}`);
-      console.log(`Auth0 user:`, auth0User);
-      
-      if (!isAuthenticated || !auth0User) {
-        console.log("User not authenticated, skipping sync");
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-
-      try {
-        console.log("Getting access token...");
-        const token = await getAccessTokenSilently();
-        console.log("Access token received");
-
-        // 1. Sync user info to backend
-        console.log("Syncing user with backend...");
-        const syncPayload = {
-          sub: auth0User.sub,
-          email: auth0User.email,
-          name: auth0User.name || "", // Handle potential undefined name
-        };
-        
-        console.log("Sync payload:", syncPayload);
-        const syncResponse = await fetch('http://127.0.0.1:8080/users', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify(syncPayload),
-        });
-
-        console.log("Sync response status:", syncResponse.status);
-        
-        if (!syncResponse.ok) {
-          const errorText = await syncResponse.text();
-          console.error("Sync error response:", errorText);
-          throw new Error(`Failed to sync user: ${syncResponse.status} - ${errorText}`);
-        }
-
-        const syncData = await syncResponse.json();
-        console.log("Sync successful, user data:", syncData);
-
-        // 2. Fetch full user profile from backend
-        console.log(`Fetching user profile for auth0 ID: ${auth0User.sub}`);
-        const profileResponse = await fetch(
-          `http://127.0.0.1:8080/users/by-auth0/${auth0User.sub}`,
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        );
-
-        console.log("Profile response status:", profileResponse.status);
-        
-        if (!profileResponse.ok) {
-          const errorText = await profileResponse.text();
-          console.error("Profile error response:", errorText);
-          throw new Error(`Failed to fetch user profile: ${profileResponse.status} - ${errorText}`);
-        }
-
-        const userData = await profileResponse.json();
-        console.log("User profile data:", userData);
-        
-        // Verify we have an ID
-        if (!userData.id) {
-          console.error("User ID is missing in response:", userData);
-          throw new Error("User ID is missing in backend response");
-        }
-
-        setUser({
-          id: userData.id,
-          name: userData.name,
-          email: userData.email,
-          auth0_id: userData.auth0_sub || auth0User.sub,
-        });
-      } catch (err) {
-        console.error("User sync error:", err);
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    syncAndLoadUser();
-  }, [isAuthenticated, auth0User, getAccessTokenSilently]);
-
-  return (
-    <UserContext.Provider value={{ user, loading, error }}>
-      {children}
-    </UserContext.Provider>
-  );
-};
-
-export const useUser = () => useContext(UserContext);
-</file>
-
 <file path="frontend/src/providers/user-sync.tsx">
 // src/providers/user-sync.tsx
 'use client';
@@ -3493,6 +4495,854 @@ format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 </file>
 
+<file path="backend/routers/calculations.py">
+from fastapi import APIRouter, Depends, HTTPException
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from models import get_db
+from routers.groups import StudentSurveyBase
+router = APIRouter()
+
+#Helper functions
+
+
+async def calculateStudentFactor(studentID: int, groupAverage: float, factor: str, studentAverage: float):
+    '''
+    Given the group average and student average for a 
+    specified factor, calculates the adjustment factor 
+    for the specified student for a certain factor
+    '''
+    adjfactor = studentAverage / groupAverage
+    
+    return {
+        'studentID': studentID, 
+        'adjfactor': adjfactor,
+        'factor': factor
+    }
+
+async def calculateStudentAverageScore(data: List[StudentSurveyBase], factor: str):
+    '''
+    Calculates the average score for a single student for a single 
+    factor given a list of their data points (student survey instances)
+    '''
+    averagescore: float = 0
+    if len(data) == 0:
+        return averagescore
+    total: int = 0
+    for datapoint in data:
+        total = total + datapoint.answer
+
+    averagescore = total / len(data)
+
+    return averagescore
+
+async def calculateGroupAverageScore(factor: str, data: List[StudentSurveyBase]):
+    '''
+    Calculates the average score for all students in a group
+    given their average factors for a particular factor
+    '''
+    total = 0
+    for datapoint in data:
+        total = total + datapoint.answer
+    groupAVG = total / len(data)
+    return groupAVG
+
+
+async def getSurveyData(courseID: int, groupID: int, db: Session = Depends(get_db)) -> List[StudentSurveyBase]:
+    '''
+    Get the raw survey data as student_survey rows for a given courseID
+    and a given groupID, return as a list of StudentSurvey objects
+    '''
+    
+    instances = db.query(StudentSurvey).filter(
+        StudentSurvey.course_id == courseID,
+        StudentSurvey.group_id == groupID
+    ).all()
+    if not instances:
+        raise HTTPException(status_code=404, detail="No survey instances found for this group in this course")    
+    return instances
+
+async def getStudentSurveyData(courseID: int, groupID: int, studentID: int, data: List[StudentSurveyBase]) -> List[StudentSurveyBase]:
+    filtered = [datapoint for datapoint in data if datapoint.evaluator_id == studentID and datapoint.group_id == groupID ]
+    return filtered
+
+@router.get('/factors')
+async def findFactors(studentID: int, groupID: int, courseID: int, db: Session = Depends(get_db)):
+    '''
+    Get the factors for a given student in a given group for a given course
+    '''
+    factors = ["q1", "q2", "q3", "q4"]
+    groupData: List[StudentSurveyBase] = await getSurveyData(courseID=courseID, groupID=groupID, db=db)
+    studentData: List[StudentSurveyBase] = await getStudentSurveyData(courseID=courseID, groupID=groupID, studentID=studentID, data=groupData)
+    factorDict = {}
+
+    if len(groupData) == 0:
+        raise HTTPException(status_code=404, detail="group data is null")    
+    for factor in factors:
+        groupFactorData = [datapoint for datapoint in groupData if datapoint.question_id == factor]
+        if len(groupFactorData) == 0:
+            raise HTTPException(status_code=404, detail="No survey instances found for this group in this course")    
+        groupAvg = await calculateGroupAverageScore(factor=factor, data=groupFactorData)
+        studentFactorData = [datapoint for datapoint in studentData if datapoint.question_id == factor]
+        studentAvg = await calculateStudentAverageScore(factor=factor, data=studentFactorData)
+        factorDict[factor] = studentAvg / groupAvg
+
+    return factorDict
+</file>
+
+<file path="backend/routers/courses.py">
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
+from io import BytesIO
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+
+from starlette.concurrency import run_in_threadpool
+import pandas as pd
+from schemas import StudentCreate
+from models import get_db
+
+router = APIRouter();
+
+
+async def get_students_in_course_helper(courseID: str = Query(...), db: Session = Depends(get_db)):
+    #Get student ids 
+    student_course_rows = db.query(StudentCourse).filter(StudentCourse.course_id == courseID).all()
+    student_ids = [row.student_id for row in student_course_rows]
+    students = db.query(Student).filter(Student.id.in_(student_ids)).all()
+    return students
+#get students enrolled in this course
+@router.get("/course/students")
+async def get_students_in_course(courseID: str = Query(...), db: Session = Depends(get_db)):
+    student_course_rows = db.query(StudentCourse).filter(StudentCourse.course_id == courseID).all()
+    student_ids = [row.student_id for row in student_course_rows]
+    students = db.query(Student).filter(Student.id.in_(student_ids)).all()
+    return students
+</file>
+
+<file path="frontend/src/app/globals.css">
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+</file>
+
+<file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { useAuth0 } from "@auth0/auth0-react";
+import { useUser } from "@/providers/user-provider";
+import { useRouter, usePathname } from 'next/navigation'
+import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
+
+interface GroupData {
+  courseCode: string;
+  courseID: string;  // Consider renaming to courseId for consistency
+  groupNumber: number;
+  id: number;
+}
+
+type GroupsProps = {
+  courseId: number;
+};
+
+const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
+  const url = new URL("http://127.0.0.1:8080/group/getgroups");
+  url.searchParams.append('courseID', courseID.toString());
+  
+  const response = await fetch(url, { method: "GET" });
+  return await response.json();
+}
+
+const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
+  const { user } = useUser();
+  const [groups, setGroups] = useState<GroupData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const router: AppRouterInstance = useRouter();
+  const pathname: string = usePathname();
+
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    const loadData = async () => {
+      try {
+        const groupdata = await fetchGroups(courseId);
+        setGroups(groupdata);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load groups");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [user?.id, courseId]);  // Added courseId to dependencies
+
+  if (loading) return <div>Loading groups...</div>;
+  if (error) return <div>Error: {error}</div>;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+      {groups.length > 0 ? (
+        groups.map((group) => (
+          <Card key={group.id} className="hover:shadow-lg transition-shadow">
+            <button 
+              type="button" 
+              onClick={() => router.push(`${pathname}/${group.id}`)}
+              className="w-full text-left"
+            >
+              <CardHeader>
+                <CardTitle>{group.courseCode}</CardTitle>
+                <CardDescription>Group: {group.groupNumber}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p>Course ID: {group.courseID}</p>
+              </CardContent>
+              <CardFooter>
+                <p>Group ID: {group.id}</p>
+              </CardFooter>
+            </button>
+          </Card>
+        ))
+      ) : (
+        <div className="text-gray-500">
+          No groups found for course ID: {courseId}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default Groups;
+</file>
+
+<file path="frontend/src/app/instructor/course/page.tsx">
+'use client'
+
+import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+
+
+interface studentData{
+    utorid: string;
+    fname: string;
+    lname: string;
+    email: string;
+    studentNumber: number;
+}
+
+
+const coursePage = () => {
+    return(<div></div>)
+}
+
+export default coursePage;
+</file>
+
+<file path="frontend/src/app/instructor/page.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { useAuth0 } from "@auth0/auth0-react";
+
+import { useUser } from "@/providers/user-provider";
+import { useRouter } from 'next/navigation'
+
+
+interface CourseData{
+    code: string;
+    session: string;
+    lecturer_id: number;
+    id: number;
+}
+
+
+const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
+    const response = await fetch("http://127.0.0.1:8080/api/courses", {
+        method: "GET",
+        headers: {
+            'instructorID': lecturer_id.toString()
+        }
+    });
+    const data = await response.json();
+    console.log(data);
+    return data;
+}
+
+const Instructor = () => {
+    const { user } = useUser();
+    const [courses, setCourses] = useState<CourseData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    
+
+
+    const router = useRouter();
+
+    useEffect(() => {
+        if (!user?.id) return;
+        const lecturerId = user.id;
+        const loadData = async () => {
+            try {
+                if (!user){
+                    throw new Error("Uh Oh");
+                }
+                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
+                setCourses(coursedata);
+                
+                
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load courses");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, [user?.id]);
+
+    if (loading) return <div>Loading courses...</div>;
+    if (error) return <div>Error: {error}</div>;
+
+
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {courses.length > 0 ? (
+                courses.map((course) => (
+                    
+                    
+                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
+                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
+                        <CardHeader>
+                            <CardTitle>{course.code}</CardTitle>
+                            <CardDescription>{course.session} Session</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                Lecturer ID: {course.lecturer_id}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>{course.code}</p>
+                        </CardFooter>
+                        </button>
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
+            )}
+        </div>
+    );
+    
+    
+
+}
+
+export default Instructor;
+</file>
+
+<file path="frontend/src/app/student/group/grouplogic.ts">
+export class GroupService{
+
+
+    
+}
+</file>
+
+<file path="frontend/src/app/student/survey/surveyQuestions.ts">
+export interface Question {
+  id: string;
+  text: string;
+  subtext: string;
+}
+
+export const surveyQuestions: Question[] = [
+  {
+    id: 'q1',
+    text: 'Contribution to the Team Work.',
+    subtext: 'Consistently completed the share of the team’s tasks on time. Took initiative to help the team achieve its goals. Made meaningful contributions to team discussions and planning.'
+    
+  },
+  {
+    id: 'q2',
+    text: 'Interacting with Teammates',
+    subtext: 'Listened respectfully to others’ ideas and perspectives. Communicated clearly and effectively with team members. Helped create a positive and inclusive team atmosphere.'
+  },
+  {
+    id: 'q3',
+    text: 'Keeping the Team on Track',
+    subtext: 'Listened respectfully to others’ ideas and perspectives. Communicated clearly and effectively with team members. Helped create a positive and inclusive team atmosphere.'
+  },
+  {
+    id: 'q4',
+    text: 'Expecting Quality',
+    subtext: 'Helped the team stay focused on goals and deadlines. Reminded others of responsibilities when needed. Contributed to setting and maintaining a clear plan of action.'
+  }
+];
+</file>
+
+<file path="frontend/src/components/ui/Dashboard.tsx">
+'use client'
+
+import { useEffect, useState } from "react"
+import { instructorService } from "@/app/instructor/instructorlogic";
+import { useUser } from "@/providers/user-provider";
+import { Student } from "@/app/student/studentlogic";
+import Factortable from "./FactorTable";
+import ExportCSV from "./ExportCSV";
+
+// "student_id": 1004985643,
+//             "name": "Yuening Chen",
+//             "factorWithSelf": 1.0,
+//             "factorWithoutSelf": 1.0
+
+interface DashboardProps{
+    courseID: number;
+}
+
+interface AdjustmentFactorTableProps {
+    name: string;
+    student_id: number;
+    factorWithSelf: number;
+    factorWithoutSelf: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
+}
+
+export interface StudentFactors{
+    name: string;
+    utorid: number;
+    factorWithSelf: number;
+    factorWithoutSelf: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
+}
+
+const Dashboard = (params: DashboardProps) => {
+    const { user } = useUser();
+    const [students, setStudents] = useState<Student[]>([]);
+    const [studentFactors, setStudentFactors] = useState<StudentFactors[]>([]);
+
+    useEffect(() => {
+        if (!user?.id) return; 
+        
+        const fetchData = async () => {
+            const factorData : StudentFactors[] = await instructorService.getStudentFactors(params.courseID);
+            setStudentFactors(factorData);
+        }
+        fetchData();
+
+    }, [user?.id, params.courseID])
+
+    return(
+        <div>
+            <ExportCSV courseID={params.courseID}/>
+            <Factortable data={studentFactors}/>
+
+        </div>
+    );
+}
+
+export default Dashboard;
+</file>
+
+<file path="frontend/src/components/ui/FactorTable.tsx">
+'use client'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { StudentFactors } from "./Dashboard"
+
+interface Props {
+  data: StudentFactors[];
+}
+
+
+const FactorTable = (params: Props) => {
+    // Handle empty or undefined data
+    if (!params.data || params.data.length === 0) {
+        return (
+            <div className="w-full max-w-6xl mx-auto p-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900">Student Adjustment Factors</h2>
+                <p className="text-gray-500">No student data available.</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="w-full max-w-6xl mx-auto p-6">
+            <h2 className="text-2xl font-bold mb-4 text-gray-900">Student Adjustment Factors</h2>
+            <Table>
+                <TableCaption>
+                    A list of students and their adjustment factors (AFW: Adjustment Factor With Self, AFWO: Adjustment Factor Without Self).
+                </TableCaption>
+                <TableHeader>
+                    <TableRow>
+                        <TableHead className="w-48">Student Name</TableHead>
+                        <TableHead className="w-32">Course</TableHead>
+                        <TableHead className="w-32">Student ID</TableHead>
+                        <TableHead className="w-32">Group Number</TableHead>
+                        <TableHead className="w-32">Course ID</TableHead>
+                        <TableHead className="text-right w-24">AFW</TableHead>
+                        <TableHead className="text-right w-24">AFWO</TableHead>
+                    </TableRow>
+                </TableHeader>
+                <TableBody>
+                    {params.data.map((student, index) => {
+                        // Defensive checks for properties
+                        const studentName = student?.name ?? 'N/A';
+                        const course = student?.courseCode ?? 'N/A';
+                        const studentId = student.utorid ?? 'N/A';
+                        const groupNumber = student?.groupNumber ?? 'N/A';
+                        const courseId = student?.courseID ?? 'N/A';
+                        const afw = student?.factorWithSelf;
+                        const afwo = student?.factorWithoutSelf;
+                        
+                        return (
+                            <TableRow key={studentId || index}>
+                                <TableCell className="font-medium">
+                                    {studentName}
+                                </TableCell>
+                                <TableCell>
+                                    {course}
+                                </TableCell>
+                                <TableCell>
+                                    {studentId}
+                                </TableCell>
+                                <TableCell>
+                                    {groupNumber}
+                                </TableCell>
+                                <TableCell>
+                                    {courseId}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                    {typeof afw === 'number' ? afw.toFixed(3) : 'N/A'}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                    {typeof afwo === 'number' ? afwo.toFixed(3) : 'N/A'}
+                                </TableCell>
+                            </TableRow>
+                        );
+                    })}
+                </TableBody>
+            </Table>
+        </div>
+    );
+}
+
+export default FactorTable;
+</file>
+
+<file path="frontend/src/providers/user-provider.tsx">
+import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  auth0_id?: string;
+  role: string;
+}
+
+interface UserContextType {
+  user: User | null;
+  loading: boolean;
+  error: string | null;
+}
+
+const UserContext = createContext<UserContextType>({
+  user: null,
+  loading: true,
+  error: null,
+});
+
+export const UserProvider = ({ children }: { children: ReactNode }) => {
+  const { user: auth0User, isAuthenticated, getAccessTokenSilently } = useAuth0();
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncAndLoadUser = async () => {
+      console.log("Starting user sync process...");
+      console.log(`Auth0 auth status: ${isAuthenticated}`);
+      console.log(`Auth0 user:`, auth0User);
+      
+      if (!isAuthenticated || !auth0User) {
+        console.log("User not authenticated, skipping sync");
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        console.log("Getting access token...");
+        const token = await getAccessTokenSilently();
+        console.log("Access token received");
+
+        // 1. Sync user info to backend
+        console.log("Syncing user with backend...");
+        const syncPayload = {
+          sub: auth0User.sub,
+          email: auth0User.email,
+          name: auth0User.name || "", // Handle potential undefined name
+        };
+        
+        console.log("Sync payload:", syncPayload);
+        const syncResponse = await fetch('http://127.0.0.1:8080/users', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify(syncPayload),
+        });
+
+        console.log("Sync response status:", syncResponse.status);
+        
+        if (!syncResponse.ok) {
+          const errorText = await syncResponse.text();
+          console.error("Sync error response:", errorText);
+          throw new Error(`Failed to sync user: ${syncResponse.status} - ${errorText}`);
+        }
+
+        const syncData = await syncResponse.json();
+        console.log("Sync successful, user data:", syncData);
+
+        // 2. Fetch full user profile from backend
+        console.log(`Fetching user profile for auth0 ID: ${auth0User.sub}`);
+        const profileResponse = await fetch(
+          `http://127.0.0.1:8080/users/by-auth0/${auth0User.sub}`,
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+
+        console.log("Profile response status:", profileResponse.status);
+        
+        if (!profileResponse.ok) {
+          const errorText = await profileResponse.text();
+          console.error("Profile error response:", errorText);
+          throw new Error(`Failed to fetch user profile: ${profileResponse.status} - ${errorText}`);
+        }
+
+        const userData = await profileResponse.json();
+        console.log("User profile data:", userData);
+        
+        // Verify we have an ID
+        if (!userData.id) {
+          console.error("User ID is missing in response:", userData);
+          throw new Error("User ID is missing in backend response");
+        }
+
+        setUser({
+          id: userData.id,
+          name: userData.name,
+          email: userData.email,
+          auth0_id: userData.auth0_sub || auth0User.sub,
+          role: userData.role || 'student'
+        });
+      } catch (err) {
+        console.error("User sync error:", err);
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    syncAndLoadUser();
+  }, [isAuthenticated, auth0User, getAccessTokenSilently]);
+
+  return (
+    <UserContext.Provider value={{ user, loading, error }}>
+      {children}
+    </UserContext.Provider>
+  );
+};
+
+export const useUser = () => useContext(UserContext);
+</file>
+
+<file path="backend/.env">
+AUTH0_DOMAIN = dev-4m08esq3iy51y7tm.us.auth0.com
+AUTH0_API_AUDIENCE = https://peerassessment.com
+AUTH0_ISSUER = https://dev-4m08esq3iy51y7tm.us.auth0.com/
+AUTH0_ALGORITHMS = RS256
+DATABASE_URL="postgresql://shawn:051671Dashui!@localhost:5432/peer"
+JWT_SECRET_KEY="14d4c1e211aadcb0986bc4de0b79c7e966b0c2945878cbeae2d04cebb6e99e64"
+</file>
+
+<file path="backend/create_tables.py">
+from models import Base, engine, StudentCourse, Group
+
+
+def drop_specific_table():
+    # Drop ONLY the Course table
+    Group.__table__.drop(bind=engine)
+    print(f"Dropped table: {StudentCourse.__tablename__}")
+
+
+def create_tables():
+   
+    
+    # Create new tables with corrected schema
+    Base.metadata.create_all(bind=engine)
+    print("Tables created successfully!")
+
+if __name__ == "__main__":
+    #drop_specific_table()
+    create_tables()
+</file>
+
 <file path="backend/routers/api.py">
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
 from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
@@ -3655,375 +5505,55 @@ async def saveCSV(
     }
 </file>
 
-<file path="frontend/src/app/globals.css">
-@import "tailwindcss";
-@import "tw-animate-css";
-
-@custom-variant dark (&:is(.dark *));
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-}
-
-:root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
-
-@layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
-}
-</file>
-
-<file path="frontend/src/app/instructor/course/page.tsx">
-'use client'
-
-import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-
-
-interface studentData{
-    utorid: string;
-    fname: string;
-    lname: string;
-    email: string;
-    studentNumber: number;
-}
-
-
-const coursePage = () => {
-    return(<div></div>)
-}
-
-export default coursePage;
-</file>
-
-<file path="frontend/src/app/instructor/page.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
-
-import { useUser } from "@/providers/user-provider";
-import { useRouter } from 'next/navigation'
-
-
-interface CourseData{
-    code: string;
-    session: string;
-    lecturer_id: number;
-    id: number;
-}
-
-
-const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
-    const response = await fetch("http://127.0.0.1:8080/api/courses", {
-        method: "GET",
-        headers: {
-            'instructorID': lecturer_id.toString()
-        }
-    });
-    const data = await response.json();
-    console.log(data);
-    return data;
-}
-
-const Instructor = () => {
-    const { user } = useUser();
-    const [courses, setCourses] = useState<CourseData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    
-
-
-    const router = useRouter();
-
-    useEffect(() => {
-        if (!user?.id) return;
-        const lecturerId = user.id;
-        const loadData = async () => {
-            try {
-                if (!user){
-                    throw new Error("Uh Oh");
-                }
-                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
-                setCourses(coursedata);
-                
-                
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load courses");
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        loadData();
-    }, [user?.id]);
-
-    if (loading) return <div>Loading courses...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {courses.length > 0 ? (
-                courses.map((course) => (
-                    
-                    
-                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
-                        <CardHeader>
-                            <CardTitle>{course.code}</CardTitle>
-                            <CardDescription>{course.session} Session</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                Lecturer ID: {course.lecturer_id}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>{course.code}</p>
-                        </CardFooter>
-                        </button>
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
-            )}
-        </div>
-    );
-    
-    
-
-}
-
-export default Instructor;
-</file>
-
-<file path="frontend/src/app/page.tsx">
-'use client';
-import { useAuth0 } from '@auth0/auth0-react';
-import { useRouter } from 'next/navigation';
-import LoginButton from '@/components/loginbutton';
-export default function Home() {
-  const { isAuthenticated } = useAuth0();
-  const router = useRouter();
-
-  if (isAuthenticated) {
-    router.push('/instructor');
-  }
-
-  return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-3xl font-bold mb-6">Peer Assessment System</h1>
-        <LoginButton/>
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="backend/.env">
-AUTH0_DOMAIN = dev-4m08esq3iy51y7tm.us.auth0.com
-AUTH0_API_AUDIENCE = https://peerassessment.com
-AUTH0_ISSUER = https://dev-4m08esq3iy51y7tm.us.auth0.com/
-AUTH0_ALGORITHMS = RS256
-DATABASE_URL="postgresql://shawn:051671Dashui!@localhost:5432/peer"
-JWT_SECRET_KEY="14d4c1e211aadcb0986bc4de0b79c7e966b0c2945878cbeae2d04cebb6e99e64"
-</file>
-
-<file path="backend/create_tables.py">
-from models import Base, engine, StudentCourse, Group
-
-
-def drop_specific_table():
-    # Drop ONLY the Course table
-    Group.__table__.drop(bind=engine)
-    print(f"Dropped table: {StudentCourse.__tablename__}")
-
-
-def create_tables():
-   
-    
-    # Create new tables with corrected schema
-    Base.metadata.create_all(bind=engine)
-    print("Tables created successfully!")
-
-if __name__ == "__main__":
-    #drop_specific_table()
-    create_tables()
-</file>
-
-<file path="backend/routers/groups.py">
-from fastapi import APIRouter, Depends, HTTPException
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
+<file path="backend/routers/users.py">
+# Endpoint to create user in PostgreSQL
+from fastapi import APIRouter, Depends, HTTPException, Body
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, get_db
 from sqlalchemy.orm import Session
 
 
-router = APIRouter()
+router = APIRouter(prefix="/users", tags=["users"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+@router.get("/studentid")
+async def getStudentID(email: str, db: Session = Depends(get_db)):
+    #get based on the same email
+    student = db.query(Student).filter(Student.email == email).first()
+    return student.id
 
-@router.get("/getgroups/")
-async def getGroups(courseID: int, db: Session = Depends(get_db)):
-    course = db.query(Course).filter(Course.id == courseID).first()
-    groups = db.query(Group).filter(Group.courseCode == course.code).all()
-
-    return groups
-
-
-@router.get("/groups/")
-async def getStudentsInGroup(groupID: int, db: Session = Depends(get_db)):
-    group = db.query(Group).filter(
-        Group.id == groupID,
-    ).first()
+@router.post("")
+async def create_user(payload: dict = Body(...), db: Session = Depends(get_db)):
+    auth0_id = payload["sub"]
     
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found in this course")
-
-    # Query StudentGroup directly with the provided groupID
-    student_group_relations = db.query(StudentGroup).filter(
-        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
-    ).all()
-
-    # 3. Fixed list comprehension syntax
-    studentIDs = [row.student_id for row in student_group_relations]
-
-    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
-    return students
-
-
-#later on also need to verify that the instructor is in this course as a lecturer
-
-@router.get("/students/")
-async def getStudentInfo(studentID: int, db: Session = Depends(get_db)):
-
-    student_row = db.query(Student).filter(Student.id == studentID).first()
+    # Check if user exists
+    user = db.query(User).filter(User.auth0_id == auth0_id).first()
+    if user:
+        return user
     
-    return student_row
+    # Create new user
+    new_user = User(
+        auth0_id=auth0_id, 
+        email=payload["email"],
+        name=payload.get("name", "")
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@router.get("/by-auth0/{auth0_sub}")
+async def getUserByAuth0(auth0_sub: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.auth0_id == auth0_sub).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "auth0_sub": user.auth0_id,
+        "role": user.role
+    }
 </file>
 
 <file path="frontend/src/app/layout.tsx">
@@ -4059,6 +5589,102 @@ export default function RootLayout({
       </body>
     </html>
   )
+}
+</file>
+
+<file path="frontend/src/app/student/studentlogic.ts">
+import AxiosClient from "../api/axiosClient"; 
+
+export interface Group{
+    id: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
+}
+
+export interface Student{
+    id: number;
+    name: string;
+    email: string;
+    fname: string;
+    lname: string;
+}
+
+export interface SurveyInstance{
+    evaluator_id: number;
+    question_id: string;
+    evaluatee_id: number;
+    group_id: number;
+    course_id: number;
+    course_code: string;
+    answer: number;
+}
+
+export class StudentService{
+
+
+    async getGroups(studentID: number): Promise<Group[] | null>{
+
+        try {
+            const response = await AxiosClient.get('group/usersgroups', {
+                params: { studentID: studentID }
+            });
+            return response.data;
+        } catch (error) {
+            console.error('Error fetching groups:', error);
+            return null;
+        }
+    }
+
+    async getStudentsInGroup(groupID: number){
+        try {
+            const response = await AxiosClient.get('group/groups/', {
+                params: { groupID: groupID }
+            });
+            return response.data;
+        } catch (error) {
+            console.error('Error fetching students in group:', error);
+            return null;
+        }
+    }
+
+    async getStudentID(email: string){
+        try {
+            const response = await AxiosClient.get('users/studentid/' , {
+                params: { email: email }
+            });
+            return response.data
+        } catch(error){
+            console.error('Could not get the student ID from the specified email', error);
+            return null;
+        }
+    }
+
+    async postSurveyInstance(payload: SurveyInstance){
+        try {
+            const response = await AxiosClient.post('group/postsurvey/', payload);
+            return response.data;
+        } catch(error){
+            console.error('Error posting survey:', error);
+            throw error;
+        }
+    }
+}
+
+export const studentService = new StudentService();
+</file>
+
+<file path="frontend/src/app/student/survey/page.tsx">
+import Survey from '@/components/ui/Survey';
+import { surveyQuestions } from './surveyQuestions';
+export default function SurveyPage() {
+  return (
+    <main className="min-h-screen bg-gray-50 py-12 content-center">
+      <div className="container mx-auto px-4 content-center">
+        <Survey questions={surveyQuestions} groupID={parseAppSegmentConfig.}/>
+      </div>
+    </main>
+  );
 }
 </file>
 
@@ -4126,109 +5752,643 @@ export function AppSidebar() {
 }
 </file>
 
-<file path="backend/models.py">
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship, Session
+<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/page.tsx">
+import GroupStudentClient from './GroupStudentClient';
+import { instructorService } from '@/app/instructor/instructorlogic';
+import Dashboard from '@/components/ui/Dashboard';
 
+const CoursePage = async ({ params }: { params: { groupID: string; courseID: string } }) => {
+  // Convert to number if needed
+  const numericGroupID = parseInt(params.groupID);
 
-from dotenv import load_dotenv
-import os
+  return (
+    <div>
+        <GroupStudentClient groupID={numericGroupID}/>
+        <Dashboard groupID={parseInt(params.groupID)} courseID={parseInt(params.courseID)}/>
+    </div>
+  );
+};
 
-load_dotenv()
+export default CoursePage;
+</file>
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-DATABASE_URL = os.getenv("DATABASE_URL")
+<file path="frontend/src/app/page.tsx">
+'use client';
+import { useAuth0 } from '@auth0/auth0-react';
+import { useRouter } from 'next/navigation';
+import LoginButton from '@/components/loginbutton';
+import { useEffect } from 'react';
+export default function Home() {
+  const { isAuthenticated } = useAuth0();
+  const router = useRouter();
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+  
+  if (isAuthenticated) {
+    router.push('/authRedirect');
+  }
 
+  
 
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <h1 className="text-3xl font-bold mb-6">Peer Assessment System</h1>
+        <LoginButton/>
+      </div>
+    </div>
+  );
+}
+</file>
 
-#helper to get find a user id base on the auth0_id
-def get_user_id(auth0_id: str) -> int:
-    with SessionLocal as session:
-        stmt = select(User.id).where(User.auth0_id == auth0_id)
-        result = session.execute(stmt).scalar()
-        return result 
+<file path="frontend/src/app/student/page.tsx">
+"use client";
 
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 
+import { StudentService, Group } from "./studentlogic";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
+import { group } from "console";
 
-#User (instructor) object
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String)
-    email = Column(String)
-    auth0_id = Column(String, unique=True, index=True)
-    role = Column(Integer, default=0)
+const Student = () => {
+  const { user, isAuthenticated, isLoading } = useAuth0();
+  const router = useRouter();
+  const [ studentServiceInstance ] = useState(() => new StudentService());
 
-    courses = relationship("Course", back_populates="lecturer")
+  const [groups, setGroups] = useState<Group[]>([]);
+
+  //get groups and set them
+  useEffect(()=> {
+    const fetchGroups = async () => {
+      if (isAuthenticated && user?.sub){
+        const response = await studentServiceInstance.getGroups(123456);
+        
+        if (response){
+          setGroups(response);
+        } 
+      
+      }
+    };
+    if (isAuthenticated && user?.sub) {
+      fetchGroups();
+    }
 
     
+    
 
-#course object
-class Course(Base):
-    __tablename__ = "courses"
-    id = Column(Integer, primary_key=True, unique=True)
-    code = Column(String, index=True)
-    session = Column(String)
-    lecturer_id = Column(Integer, ForeignKey("users.id"))
-    lecturer = relationship("User", back_populates="courses")
-    enrollments = relationship("StudentCourse", back_populates="course")
+  }, [isAuthenticated, user?.sub, studentServiceInstance])
+  return (
+    <div className="p-4">
+      <h2 className="text-lg font-semibold mb-6">
+        You have the following surveys to complete:
+      </h2>
+
+       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {groups.length > 0 ? (
+                groups.map((group) => (
+                    
+                    
+                        <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
+                        <button type="button" onClick={() => router.push(`student/survey/${group.id}/${group.courseID}/${group.courseCode}`)}>
+                        <CardHeader>
+                            <CardTitle>{group.courseCode}</CardTitle>
+                            <CardDescription>Group {group.groupNumber} </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                Group ID: {group.id}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>Begin Survey</p>
+                        </CardFooter>
+                        </button>
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No groups found for this student, ID = {user?.id}</div>
+            )}
+        </div>
+
+      
+
+      
+      
+      {/* <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
+        <button type="button" onClick={() => router.push(`student/course/`)}>
+        <Card className="flex-1">
+          <CardHeader>
+            <CardTitle>STAC67</CardTitle>
+            <CardDescription>Group 2</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p>Regression Analysis</p>
+          </CardContent>
+        </Card>
+        </button>
 
 
+        <button type="button" onClick={() => router.push(``)}>
+        <Card className="flex-1">
+          <CardHeader>
+            <CardTitle>CSCC01</CardTitle>
+            <CardDescription>Group: 4</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p>Intro to Software Engineering</p>
+          </CardContent>
+        </Card>
+        </button>
 
-#student object
-class Student(Base):
-    __tablename__ = "students"
-    id = Column(Integer, primary_key=True, index=False)
-    student_id = Column(Integer, unique=True, index=False)
-    email = Column(String)
-    name = Column(String)
-    firstname = Column(String)
-    lastname = Column(String)
-    utorid = Column(String, unique=True)
+        <button type="button" onClick={() => router.push(``)}>
+        <Card className="flex-1">
+          <CardHeader>
+            <CardTitle>CSCC01</CardTitle>
+            <CardDescription>Group: 4</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p>Intro to Software Engineering</p>
+          </CardContent>
+        </Card>
+        </button>
 
-    groups = relationship("StudentGroup", back_populates="student")
-    enrollments = relationship("StudentCourse", back_populates="student")
+      </div> */}
+    </div>
+  );
+};
 
+export default Student;
+</file>
 
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@auth0/auth0-react": "^2.3.0",
+    "@auth0/nextjs-auth0": "^4.6.0",
+    "@radix-ui/react-dialog": "^1.1.14",
+    "@radix-ui/react-separator": "^1.1.7",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tooltip": "^1.2.7",
+    "@tanstack/react-table": "^8.21.3",
+    "axios": "^1.9.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.511.0",
+    "next": "15.3.2",
+    "pg": "^8.16.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-dropzone": "^14.3.8",
+    "tailwind-merge": "^3.3.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.3.2",
+    "tailwindcss": "^4",
+    "tw-animate-css": "^1.3.0",
+    "typescript": "^5"
+  }
+}
+</file>
 
+<file path="frontend/src/components/ui/Survey.tsx">
+'use client';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Student, SurveyInstance, studentService } from '@/app/student/studentlogic';
+import { useAuth0 } from '@auth0/auth0-react';
+import { useUser } from '@/providers/user-provider';
 
-class Group(Base):
-    __tablename__ = "groups"
-    id = Column(Integer, primary_key=True, index=True)
-    courseCode = Column(String)
-    courseID = Column(Integer, ForeignKey("courses.id"))
-    groupNumber = Column(Integer)
-    students = relationship("StudentGroup", back_populates="group")
+interface Question {
+  id: string;
+  text: string;
+  subtext: string;
+}
 
+interface SurveyAnswer {
+  studentId: number;
+  questionId: string;
+  value: number;
+}
 
+interface SurveyProps {
+  questions: Question[];
+  groupID: number;
+  courseID: number;
+  studentID: number;
+  courseCode: string;
+}
 
-#Student and course relation table
-class StudentCourse(Base):
-    __tablename__ = "enrolledin"
-    id = Column(Integer, primary_key=True, index=False)
-    student_id = Column(Integer, ForeignKey("students.id"))
-    course_id = Column(Integer, ForeignKey("courses.id"))
+// Separate component for option buttons
+const OptionButton = ({ 
+  value, 
+  selected, 
+  onClick 
+}: { 
+  value: number; 
+  selected: boolean; 
+  onClick: () => void; 
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`w-8 h-8 rounded-full flex items-center justify-center transition-all text-sm
+      ${selected 
+        ? 'bg-blue-600 text-white transform scale-110' 
+        : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
+      }`}
+    aria-pressed={selected}
+  >
+    {value}
+  </button>
+);
 
-    student = relationship("Student", back_populates="enrollments")
-    course = relationship("Course", back_populates="enrollments")
+// Table cell component for student-question intersection
+const SurveyCell = ({
+  student,
+  questionId,
+  selectedValue,
+  onSelect,
+  showError,
+  isAnswered
+}: {
+  student: Student;
+  questionId: string;
+  selectedValue?: number;
+  onSelect: (value: number) => void;
+  showError: boolean;
+  isAnswered: boolean;
+}) => {
+  const isMissing = !isAnswered && showError;
 
-#Student and group relation table, keeps track of which students in which groups
-class StudentGroup(Base):
-    __tablename__ = "student_group"
-    student_id = Column(Integer, ForeignKey("students.id"), primary_key=True)
-    group_id = Column(Integer, ForeignKey("groups.id"), primary_key=True)
-    student = relationship("Student", back_populates="groups")
-    group = relationship("Group", back_populates="students")
+  return (
+    <td 
+      className={`p-3 border-r border-gray-200 text-center transition-all ${
+        isMissing 
+          ? 'bg-red-50 border-red-200 missing-answer' 
+          : 'bg-white hover:bg-gray-50'
+      }`}
+    >
+      <div className="flex justify-center gap-1">
+        {[1, 2, 3, 4, 5].map((value) => (
+          <OptionButton 
+            key={value}
+            value={value}
+            selected={selectedValue === value}
+            onClick={() => onSelect(value)}
+          />
+        ))}
+      </div>
+      {isMissing && (
+        <div className="text-red-600 text-xs mt-1">Required</div>
+      )}
+    </td>
+  );
+};
+
+// Custom hook for survey logic (unchanged)
+const useSurveyLogic = (groupID: number, questions: Question[]) => {
+  const [students, setStudents] = useState<Student[]>([]);
+  const [answers, setAnswers] = useState<Map<string, number>>(new Map());
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadStudents = async () => {
+      try {
+        const data = await studentService.getStudentsInGroup(groupID);
+        setStudents(data || []);
+      } catch (error) {
+        console.error('Failed to load students:', error);
+        setStudents([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadStudents();
+  }, [groupID]);
+
+  const setAnswer = useCallback((studentId: number, questionId: string, value: number) => {
+    const key = `${studentId}-${questionId}`;
+    setAnswers(prev => new Map(prev).set(key, value));
+  }, []);
+
+  const getAnswer = useCallback((studentId: number, questionId: string): number | undefined => {
+    return answers.get(`${studentId}-${questionId}`);
+  }, [answers]);
+
+  const isAnswered = useCallback((studentId: number, questionId: string): boolean => {
+    return answers.has(`${studentId}-${questionId}`);
+  }, [answers]);
+
+  // Memoized calculations
+  const totalRequired = useMemo(() => 
+    students.length * questions.length, 
+    [students.length, questions.length]
+  );
+
+  const currentAnswers = answers.size;
+  const isComplete = currentAnswers === totalRequired;
+
+  const missingAnswers = useMemo(() => {
+    const missing: Array<{ studentName: string; questionText: string }> = [];
+    
+    students.forEach(student => {
+      questions.forEach(question => {
+        if (!isAnswered(student.id, question.id)) {
+          missing.push({
+            studentName: student.name,
+            questionText: question.text
+          });
+        }
+      });
+    });
+    
+    return missing;
+  }, [students, questions, isAnswered]);
+
+  return {
+    students,
+    answers,
+    loading,
+    setAnswer,
+    getAnswer,
+    isAnswered,
+    totalRequired,
+    currentAnswers,
+    isComplete,
+    missingAnswers
+  };
+};
+
+// Main Survey Component
+const Survey = ({ questions, groupID, courseID, studentID, courseCode }: SurveyProps) => {
+  //const { user } = useAuth0();
+  const { user } = useUser();
+  
+  const {
+    students,
+    loading,
+    setAnswer,
+    getAnswer,
+    isAnswered,
+    totalRequired,
+    currentAnswers,
+    isComplete,
+    missingAnswers
+  } = useSurveyLogic(groupID, questions);
+
+  const [submitted, setSubmitted] = useState(false);
+  const [showError, setShowError] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSelect = useCallback((studentId: number, questionId: string, value: number) => {
+    setAnswer(studentId, questionId, value);
+    if (showError) {
+      setShowError(false);
+    }
+  }, [setAnswer, showError]);
+  
+  const createSurveyPayloads = useCallback((): SurveyInstance[] => {
+    const payloads: SurveyInstance[] = [];
+    const evaluatorId = user?.id ?? 313785;
+    
+    students.forEach(student => {
+      questions.forEach(question => {
+        const answer = getAnswer(student.id, question.id);
+        
+        if (answer !== undefined) {
+          payloads.push({
+            evaluator_id: studentID,
+            question_id: question.id,
+            answer: answer,
+            evaluatee_id: student.id,
+            group_id: groupID,
+            course_id: courseID,
+            course_code: courseCode
+          });
+        }
+      });
+    });
+    console.log(payloads);
+    return payloads;
+  }, [students, questions, getAnswer, groupID, courseID]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!isComplete) {
+      setShowError(true);
+      const firstMissing = document.querySelector('.missing-answer');
+      firstMissing?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+
+    setSubmitting(true);
+    
+    try {
+      const payloads = createSurveyPayloads();
+      console.log('Survey payloads:', payloads);
+      
+      // Submit all responses
+      for (const payload of payloads) {
+        console.log('Submitting:', payload);
+        await studentService.postSurveyInstance(payload);
+      }
+      
+      setSubmitted(true);
+    } catch (error) {
+      console.error('Error submitting survey:', error);
+      setShowError(true);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-4 text-center">
+        <div className="animate-pulse">Loading students...</div>
+      </div>
+    );
+  }
+
+  if (submitted) {
+    return (
+      <div className="p-4 bg-green-100 text-green-800 rounded-lg text-center">
+        <h3 className="text-lg font-semibold mb-2">Thank you for completing the survey!</h3>
+        <p>All responses have been recorded successfully.</p>
+        <div className="mt-4 text-sm">
+          <p>Submitted {currentAnswers} responses for {students.length} students across {questions.length} questions.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="max-w-full mx-auto p-6 bg-white rounded-lg shadow-md">
+      <h2 className="text-2xl font-bold mb-6 text-center">Survey</h2>
+      
+      {/* Progress indicator */}
+      <div className="mb-6">
+        <div className="flex justify-between text-sm mb-2">
+          <span>Progress</span>
+          <span>{currentAnswers}/{totalRequired} completed</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div 
+            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${(currentAnswers / totalRequired) * 100}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Error message */}
+      {showError && (
+        <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
+          <h4 className="font-semibold mb-2">Please complete all questions:</h4>
+          <ul className="text-sm space-y-1">
+            {missingAnswers.slice(0, 5).map((missing, index) => (
+              <li key={index}>
+                • {missing.studentName} - {missing.questionText}
+              </li>
+            ))}
+            {missingAnswers.length > 5 && (
+              <li className="text-gray-600">
+                ... and {missingAnswers.length - 5} more
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* Rating scale legend */}
+      <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+        <h3 className="text-sm font-semibold mb-2">Rating Scale:</h3>
+        <div className="flex justify-center gap-6 text-sm">
+          <span>1 - Poor</span>
+          <span>2 - Fair</span>
+          <span>3 - Good</span>
+          <span>4 - Very Good</span>
+          <span>5 - Excellent</span>
+        </div>
+      </div>
+      
+      {/* Survey Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse border border-gray-300 bg-white">
+          <thead>
+            <tr className="bg-gray-100">
+              <th className="border border-gray-300 p-3 text-left font-semibold sticky left-0 bg-gray-100 z-10">
+                Student
+              </th>
+              {questions.map((question) => (
+                <th 
+                  key={question.id} 
+                  className="border border-gray-300 p-3 text-center font-semibold min-w-[200px]"
+                >
+                  <div className="mb-2">{question.text}</div>
+                  <div className="text-xs text-gray-600 font-normal">
+                    {question.subtext}
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {students.map((student) => (
+              <tr key={student.id} className="hover:bg-gray-50">
+                <td className="border border-gray-300 p-3 font-medium sticky left-0 bg-white z-10">
+                  <div className="flex items-center justify-between">
+                    <span>{student.name}</span>
+                    <div className="flex gap-1">
+                      {questions.map((question) => (
+                        <div
+                          key={question.id}
+                          className={`w-2 h-2 rounded-full ${
+                            isAnswered(student.id, question.id)
+                              ? 'bg-green-500'
+                              : 'bg-gray-300'
+                          }`}
+                          title={`${question.text}: ${
+                            isAnswered(student.id, question.id) ? 'Answered' : 'Not answered'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </td>
+                {questions.map((question) => (
+                  <SurveyCell
+                    key={question.id}
+                    student={student}
+                    questionId={question.id}
+                    selectedValue={getAnswer(student.id, question.id)}
+                    onSelect={(value) => handleSelect(student.id, question.id, value)}
+                    showError={showError}
+                    isAnswered={isAnswered(student.id, question.id)}
+                  />
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-8">
+        <button 
+          type="submit" 
+          className={`w-full py-3 rounded-lg transition font-semibold ${
+            isComplete && !submitting
+              ? 'bg-blue-600 text-white hover:bg-blue-700' 
+              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+          }`}
+          disabled={!isComplete || submitting}
+        >
+          {submitting 
+            ? 'Submitting...'
+            : isComplete 
+              ? 'Submit Survey' 
+              : `Complete All Questions (${currentAnswers}/${totalRequired})`
+          }
+        </button>
+        
+        {!isComplete && (
+          <p className="text-center text-sm text-gray-500 mt-2">
+            Please answer all questions for all students before submitting.
+          </p>
+        )}
+      </div>
+    </form>
+  );
+};
+
+export default Survey;
 </file>
 
 <file path="backend/main.py">
@@ -4245,6 +6405,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dependencies import auth
 from routers.users import router as user_router
 from routers.courses import router as course_router
+from routers.calculations import router as calc_router
+from routers.factor import router as factor_router
 #from routers.auth import router as auth_router
 
 # Creates app instance
@@ -4255,6 +6417,8 @@ app.include_router(api_router, prefix="/api")
 app.include_router(group_router, prefix="/group")
 app.include_router(user_router)
 app.include_router(course_router)
+app.include_router(calc_router, prefix='/calculate')
+app.include_router(factor_router, prefix='/factor')
 #app.include_router(auth_router, prefix="/auth")
 
 
@@ -4385,49 +6549,231 @@ def add_space_manual(s):
 #     return auth_result
 </file>
 
-<file path="frontend/package.json">
-{
-  "name": "frontend",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "@auth0/auth0-react": "^2.3.0",
-    "@auth0/nextjs-auth0": "^4.6.0",
-    "@radix-ui/react-dialog": "^1.1.14",
-    "@radix-ui/react-separator": "^1.1.7",
-    "@radix-ui/react-slot": "^1.2.3",
-    "@radix-ui/react-tooltip": "^1.2.7",
-    "@tanstack/react-table": "^8.21.3",
-    "axios": "^1.9.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "lucide-react": "^0.511.0",
-    "next": "15.3.2",
-    "pg": "^8.16.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-dropzone": "^14.3.8",
-    "tailwind-merge": "^3.3.0"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3",
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "15.3.2",
-    "tailwindcss": "^4",
-    "tw-animate-css": "^1.3.0",
-    "typescript": "^5"
-  }
-}
+<file path="backend/models.py">
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select, Float
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship, Session
+from sqlalchemy.dialects.postgresql import ARRAY
+
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+#helper to get find a user id base on the auth0_id
+def get_user_id(auth0_id: str) -> int:
+    with SessionLocal() as session:
+        stmt = select(User.id).where(User.auth0_id == auth0_id)
+        result = session.execute(stmt).scalar()
+        return result 
+
+#User (instructor) object
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    email = Column(String)
+    auth0_id = Column(String, unique=True, index=True)
+    role = Column(String, default="student")
+
+    courses = relationship("Course", back_populates="lecturer")
+
+#course object
+class Course(Base):
+    __tablename__ = "courses"
+    id = Column(Integer, primary_key=True, unique=True)
+    code = Column(String, index=True)
+    session = Column(String)
+    lecturer_id = Column(Integer, ForeignKey("users.id"))
+    
+    lecturer = relationship("User", back_populates="courses")
+    enrollments = relationship("StudentCourse", back_populates="course")
+    surveys = relationship("StudentSurvey", back_populates="course")
+
+#student object
+class Student(Base):
+    __tablename__ = "students"
+    id = Column(Integer, primary_key=True, index=False)
+    student_id = Column(Integer, unique=True, index=False)
+    email = Column(String)
+    name = Column(String)
+    firstname = Column(String)
+    lastname = Column(String)
+    utorid = Column(String, unique=True)
+
+    groups = relationship("StudentGroup", back_populates="student")
+    enrollments = relationship("StudentCourse", back_populates="student")
+    
+    # Fixed relationships - using StudentSurvey instead of Survey
+    surveys_as_evaluator = relationship("StudentSurvey", foreign_keys="StudentSurvey.evaluator_id", back_populates="evaluator")
+    surveys_as_evaluatee = relationship("StudentSurvey", foreign_keys="StudentSurvey.evaluatee_id", back_populates="evaluatee")
+
+class Group(Base):
+    __tablename__ = "groups"
+    id = Column(Integer, primary_key=True, index=True)
+    courseCode = Column(String)
+    courseID = Column(Integer, ForeignKey("courses.id"))
+    groupNumber = Column(Integer)
+
+    students = relationship("StudentGroup", back_populates="group")
+    surveys = relationship("StudentSurvey", back_populates="group")
+
+#Student and course relation table
+class StudentCourse(Base):
+    __tablename__ = "enrolledin"
+    id = Column(Integer, primary_key=True, index=False)
+    student_id = Column(Integer, ForeignKey("students.id"))
+    course_id = Column(Integer, ForeignKey("courses.id"))
+
+    student = relationship("Student", back_populates="enrollments")
+    course = relationship("Course", back_populates="enrollments")
+
+#Student and group relation table, keeps track of which students in which groups
+class StudentGroup(Base):
+    __tablename__ = "student_group"
+    student_id = Column(Integer, ForeignKey("students.id"), primary_key=True)
+    group_id = Column(Integer, ForeignKey("groups.id"), primary_key=True)
+    
+    student = relationship("Student", back_populates="groups")
+    group = relationship("Group", back_populates="students")
+
+
+class Question(Base):
+    __tablename__ = "question"
+    qid = Column(String, primary_key=True)
+    options = Column(ARRAY(Integer))
+
+#Student and Survey relation table, keeps track of which students have finished which surveys for which courses
+class StudentSurvey(Base):
+    __tablename__ = "student_survey"
+    survey_response_id = Column(Integer, primary_key=True)
+    evaluator_id = Column(Integer, ForeignKey("students.id"))
+    evaluatee_id = Column(Integer, ForeignKey("students.id"))
+    question_id = Column(String, ForeignKey("question.qid"))
+    answer = Column(Integer)
+    group_id = Column(Integer, ForeignKey("groups.id"))
+    course_id = Column(Integer, ForeignKey("courses.id"))
+    course_code = Column(String)
+
+    # Specify which FK to use for each relationship
+    evaluator = relationship("Student", foreign_keys=[evaluator_id], back_populates="surveys_as_evaluator")
+    evaluatee = relationship("Student", foreign_keys=[evaluatee_id], back_populates="surveys_as_evaluatee")
+    group = relationship("Group", back_populates="surveys")
+    course = relationship("Course", back_populates="surveys")
+
+
+class StudentAdjustmentFactor(Base):
+    __tablename__ = "student_adjustment_factors"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    courseCode = Column(String)
+    utorid = Column(String, ForeignKey("students.utorid"))
+    courseid = Column(Integer, ForeignKey("courses.id"))
+    groupNumber = Column(Integer)
+    factorWithSelf = Column(Float)
+    factorWithoutSelf = Column(Float)
+</file>
+
+<file path="backend/routers/groups.py">
+from fastapi import APIRouter, Depends, HTTPException
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+
+
+router = APIRouter()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.get("/getgroups/")
+async def getGroups(courseID: int, db: Session = Depends(get_db)):
+    course = db.query(Course).filter(Course.id == courseID).first()
+    groups = db.query(Group).filter(Group.courseCode == course.code).all()
+
+    return groups
+
+
+@router.get("/groups/")
+async def getStudentsInGroup(groupID: int, db: Session = Depends(get_db)):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+
+
+#later on also need to verify that the instructor is in this course as a lecturer
+
+@router.get("/students/")
+async def getStudentInfo(studentID: int, db: Session = Depends(get_db)):
+
+    student_row = db.query(Student).filter(Student.id == studentID).first()
+    
+    return student_row
+
+@router.get("/usersgroups")
+async def getGroups(studentID: int, db: Session = Depends(get_db)):
+    group_ids = db.query(StudentGroup.group_id).filter(
+        StudentGroup.student_id == studentID
+    ).all()
+    group_ids = [row[0] for row in group_ids]
+
+
+    groups = db.query(Group).filter(
+        Group.id.in_(group_ids)
+    ).all()
+    return groups;
+
+
+class StudentSurveyBase(BaseModel):
+    evaluator_id: int
+    question_id: str
+    answer: int
+    evaluatee_id: int
+    group_id: int
+    course_id: int
+    course_code: str
+
+@router.post("/postsurvey")
+async def postSurveyInstance(surveyResponse: StudentSurveyBase, db: Session = Depends(get_db)):
+    db_survey = StudentSurvey(**surveyResponse.model_dump())
+    db.add(db_survey)
+    db.commit()
+    db.refresh(db_survey)
+    return db_survey
 </file>
 
 </files>

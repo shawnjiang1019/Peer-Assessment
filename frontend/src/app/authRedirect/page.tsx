@@ -1,36 +1,33 @@
 'use client';
-
 import { useEffect, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import { useRouter } from "next/navigation";
-import { AuthService } from "./authlogic";
+import { useUser } from "@/providers/user-provider";
 
 const AuthRedirect = () => {
-    const [userServiceInstance] = useState(() => new AuthService()); // ✅ Create instance once
     const [isRedirecting, setIsRedirecting] = useState(false);
-    const { user, isAuthenticated, isLoading } = useAuth0();
+    const { isAuthenticated, isLoading: auth0Loading } = useAuth0();
+    const { user, loading: userLoading, error } = useUser(); // Use context instead of API call
     const router = useRouter();
-    const sub = user?.sub;
-    
+
     useEffect(() => {
-        // ✅ Create async function inside useEffect
         const handleRedirect = async () => {
-            if (isLoading || isRedirecting) {
+            // Wait for both Auth0 and user context to finish loading
+            if (auth0Loading || userLoading || isRedirecting) {
                 return;
             }
-            
+
             if (!isAuthenticated) {
                 router.push('/');
                 return;
             }
 
-            if (user && sub) {
+            if (user) {
                 try {
                     setIsRedirecting(true);
-                    const userRole = await userServiceInstance.getUserRole(sub);
-                    console.log('User role:', userRole);
+                    console.log('User role:', user.role);
 
-                    switch (userRole) {
+                    switch (user.role) {
                         case 'instructor':
                             router.push('/instructor');
                             break;
@@ -41,30 +38,35 @@ const AuthRedirect = () => {
                             router.push('/student');
                     }
                 } catch (error) {
-                    console.error('Error fetching user role:', error);
+                    console.error('Error during redirect:', error);
                     // Fallback to student page on error
                     router.push('/student');
                 } finally {
                     setIsRedirecting(false);
                 }
+            } else if (error) {
+                console.error('User context error:', error);
+                // Handle error case - maybe redirect to error page or fallback
+                router.push('/student');
             }
         };
 
-        // ✅ Call the async function
         handleRedirect();
-    }, [user, isAuthenticated, isLoading, router, sub, userServiceInstance, isRedirecting]);
+    }, [user, isAuthenticated, auth0Loading, userLoading, router, isRedirecting, error]);
 
-    // ✅ Show loading state while Auth0 is loading or while redirecting
-    if (isLoading || isRedirecting) {
+    // Show loading state while Auth0 is loading, user is loading, or while redirecting
+    if (auth0Loading || userLoading || isRedirecting) {
         return (
             <div className="flex justify-center items-center min-h-screen">
                 <div className="animate-pulse">
-                    {isLoading ? 'Loading...' : 'Redirecting...'}
+                    {auth0Loading ? 'Authenticating...' : 
+                     userLoading ? 'Loading user data...' : 
+                     'Redirecting...'}
                 </div>
             </div>
         );
     }
-    
+
     return null;
 };
 

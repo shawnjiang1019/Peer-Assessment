@@ -5,66 +5,56 @@ import { instructorService } from "@/app/instructor/instructorlogic";
 import { useUser } from "@/providers/user-provider";
 import { Student } from "@/app/student/studentlogic";
 import Factortable from "./FactorTable";
+import ExportCSV from "./ExportCSV";
 
+// "student_id": 1004985643,
+//             "name": "Yuening Chen",
+//             "factorWithSelf": 1.0,
+//             "factorWithoutSelf": 1.0
 
 interface DashboardProps{
     courseID: number;
-    groupID: number;
 }
 
 interface AdjustmentFactorTableProps {
-    q1: number;
-    q2: number;
-    q3: number;
-    q4: number;
+    name: string;
+    student_id: number;
+    factorWithSelf: number;
+    factorWithoutSelf: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
 }
 
 export interface StudentFactors{
-    studentID: number;
-    data: AdjustmentFactorTableProps;
+    name: string;
+    utorid: number;
+    factorWithSelf: number;
+    factorWithoutSelf: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
 }
 
 const Dashboard = (params: DashboardProps) => {
     const { user } = useUser();
     const [students, setStudents] = useState<Student[]>([]);
     const [studentFactors, setStudentFactors] = useState<StudentFactors[]>([]);
-    const [tableProps, setTableProps] = useState<AdjustmentFactorTableProps>();
 
     useEffect(() => {
         if (!user?.id) return; 
         
         const fetchData = async () => {
-            try {
-                const studentData: Student[] = await instructorService.getStudents(params.groupID);
-                setStudents(studentData);
-                
-                const factorPromises: Promise<AdjustmentFactorTableProps>[] = studentData.map(student => 
-                    instructorService.getStudentFactors(student.id, params.courseID, params.groupID)
-                );
-                
-                const allFactorData: AdjustmentFactorTableProps[] = await Promise.all(factorPromises);
-                
-                // Transform the data to match StudentFactors interface
-                const studentFactorsData: StudentFactors[] = studentData.map((student, index) => ({
-                    studentID: student.id,
-                    data: allFactorData[index]
-                }));
-                
-                setStudentFactors(studentFactorsData);
-                console.log('All factor data:', studentFactorsData);
-            } catch(error){
-                console.error('Error fetching data:', error);
-            }
+            const factorData : StudentFactors[] = await instructorService.getStudentFactors(params.courseID);
+            setStudentFactors(factorData);
         }
-        
         fetchData();
 
-    }, [user?.id, params.courseID, params.groupID])
+    }, [user?.id, params.courseID])
 
     return(
         <div>
-            
-
+            <ExportCSV courseID={params.courseID}/>
             <Factortable data={studentFactors}/>
 
         </div>

@@ -16,7 +16,6 @@ import { useEffect, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import { group } from "console";
 
-
 const Student = () => {
   const { user, isAuthenticated, isLoading } = useAuth0();
   const router = useRouter();
@@ -28,7 +27,7 @@ const Student = () => {
   useEffect(()=> {
     const fetchGroups = async () => {
       if (isAuthenticated && user?.sub){
-        const response = await studentServiceInstance.getGroups(313785);
+        const response = await studentServiceInstance.getGroups(123456);
         
         if (response){
           setGroups(response);
