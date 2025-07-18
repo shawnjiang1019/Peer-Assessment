@@ -13,6 +13,7 @@ from routers.users import router as user_router
 from routers.courses import router as course_router
 from routers.calculations import router as calc_router
 from routers.factor import router as factor_router
+import os
 #from routers.auth import router as auth_router
 
 # Creates app instance
@@ -34,6 +35,8 @@ origins = [
     "http://127.0.0.1:3000",
     "http://localhost",       # optional
     "http://127.0.0.1",
+    "https://peer-assessment-five.vercel.app/",
+    
     # "https://your-production-site.com"
 ]
 
