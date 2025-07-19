@@ -54,7 +54,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
         };
         
         console.log("Sync payload:", syncPayload);
-        const syncResponse = await fetch("https://peer-backend-1014214808131.us-central1.run.app/users/", {
+        const syncResponse = await fetch("https://peer-backend-1014214808131.us-central1.run.app/users", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
