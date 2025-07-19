@@ -11,7 +11,7 @@ interface User {
 export class AuthService{
     async getUserRole(sub: string): Promise<string | null>{
         
-        const response = await fetch(`http://127.0.0.1:8080/users/by-auth0/${sub}`);
+        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users/by-auth0/${sub}`);
         const result: User = await response.json();
 
         return result.role;
