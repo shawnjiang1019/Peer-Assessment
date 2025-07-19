@@ -54,7 +54,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
         };
         
         console.log("Sync payload:", syncPayload);
-        const syncResponse = await fetch(`${process.env.REACT_APP_API_URL}/users`, {
+        const syncResponse = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -77,7 +77,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
         // 2. Fetch full user profile from backend
         console.log(`Fetching user profile for auth0 ID: ${auth0User.sub}`);
         const profileResponse = await fetch(
-          `${process.env.REACT_APP_API_URL}/users/by-auth0/${auth0User.sub}`,
+          `https://peer-backend-1014214808131.us-central1.run.app/users/by-auth0/${auth0User.sub}`, //here
           {
             headers: { Authorization: `Bearer ${token}` }
           }

@@ -3,7 +3,7 @@ import { env } from "process";
 
 
 const AxiosClient = axios.create({
-  baseURL: process.env.REACT_APP_PROD_API, // Your API base URL
+  baseURL: "https://peer-backend-1014214808131.us-central1.run.app", // Your API base URL
   timeout: 10000, // Optional: set timeout
 });
 
