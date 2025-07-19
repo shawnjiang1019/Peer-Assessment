@@ -14,7 +14,7 @@ export default function UserSync({ children }: { children: React.ReactNode }) {
       try {
         const token = await getAccessTokenSilently();
         
-        await fetch(`${process.env.REACT_APP_API_URL}/users`, {
+        await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

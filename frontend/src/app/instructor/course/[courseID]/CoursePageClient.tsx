@@ -16,7 +16,7 @@ const CoursePageClient =  ({ courseId }: Props) => {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8080/course/students?courseID=${courseId}`);
+        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/students?courseID=${courseId}`);
         if (!response.ok) throw new Error("Failed to fetch students");
         const data = await response.json();
 
