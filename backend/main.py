@@ -35,7 +35,7 @@ origins = [
     "http://127.0.0.1:3000",
     "http://localhost",       # optional
     "http://127.0.0.1",
-    "https://peer-assessment-five.vercel.app/",
+    "https://peer-assessment-five.vercel.app",
     
     # "https://your-production-site.com"
 ]

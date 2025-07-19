@@ -141,6 +141,1417 @@ thing.py
 <files>
 This section contains the contents of the repository's files.
 
+<file path=".gitattributes">
+# Auto detect text files and perform LF normalization
+* text=auto
+</file>
+
+<file path="backend/.env.prod">
+DATABASE_URL=postgresql://shawn:051671Dashui!@localhost:5432/peer
+AUTH0_DOMAIN=dev-4m08esq3iy51y7tm.us.auth0.com
+AUTH0_API_AUDIENCE=https://peerassessment.com
+</file>
+
+<file path="backend/alembic/env.py">
+from logging.config import fileConfig
+from models import Base  # Import your Base
+from sqlalchemy import engine_from_config
+from sqlalchemy import pool
+
+from alembic import context
+
+
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# add your model's MetaData object here
+# for 'autogenerate' support
+# from myapp import mymodel
+# target_metadata = mymodel.Base.metadata
+target_metadata = Base.metadata
+# other values from the config, defined by the needs of env.py,
+# can be acquired:
+# my_important_option = config.get_main_option("my_important_option")
+# ... etc.
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+</file>
+
+<file path="backend/alembic/README">
+Generic single-database configuration.
+</file>
+
+<file path="backend/alembic/script.py.mako">
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    ${downgrades if downgrades else "pass"}
+</file>
+
+<file path="backend/application/cache.py">
+from fastapi import FastAPI
+from datetime import datetime, timedelta
+import asyncio
+from typing import Optional, Any
+
+class AppCache:
+    def __init__(self, max_size: int = 1000):
+        self._cache = {}
+        self._access_times = {}
+        self._max_size = max_size
+    
+    def get(self, key: str) -> Optional[Any]:
+        if key in self._cache:
+            value, expiry = self._cache[key]
+            if datetime.now() < expiry:
+                self._access_times[key] = datetime.now()
+                return value
+            else:
+                self._evict(key)
+        return None
+    
+    def set(self, key: str, value: Any, ttl_seconds: int = 300):
+        if len(self._cache) >= self._max_size:
+            self._evict_lru()
+        
+        expiry = datetime.now() + timedelta(seconds=ttl_seconds)
+        self._cache[key] = (value, expiry)
+        self._access_times[key] = datetime.now()
+    
+    def _evict(self, key: str):
+        self._cache.pop(key, None)
+        self._access_times.pop(key, None)
+    
+    def _evict_lru(self):
+        if not self._access_times:
+            return
+        oldest_key = min(self._access_times.keys(), key=lambda k: self._access_times[k])
+        self._evict(oldest_key)
+
+# Global cache instance
+cache = AppCache(max_size=5000)  
+
+# EXAMPLE USAGE:
+# @app.get("/users/{user_id}")
+# async def get_user(user_id: int):
+#     cache_key = f"user:{user_id}"
+    
+#     cached_user = cache.get(cache_key)
+#     if cached_user:
+#         return cached_user
+    
+#     # Fetch from database
+#     user_data = await get_user_from_db(user_id)
+    
+#     # Cache for 10 minutes
+#     cache.set(cache_key, user_data, ttl_seconds=600)
+    
+#     return user_data
+</file>
+
+<file path="backend/application/config.py">
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    auth0_domain: str
+    auth0_api_audience: str
+    auth0_issuer: str
+    auth0_algorithms: str
+
+    class Config:
+        env_file = ".env"
+
+
+@lru_cache()
+def get_settings():
+    return Settings()
+</file>
+
+<file path="backend/dependencies/auth.py">
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+import requests
+import os
+
+#set up bearer token authentication scheme, HTTPBearer() looks for tokens in the "Authoriation" header
+security = HTTPBearer()
+
+# extract the jwt from the header
+async def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        token = credentials.credentials #get the raw token string from header
+        # get keys
+        jwks_url = f"https://{os.getenv('AUTH0_DOMAIN')}/.well-known/jwks.json" #JWKS (JSON Web Key Sets) rae a collection of public cryptographic keys used to verify JSON Web Tokens, Auth0 exposes these keys at this endpoint
+        jwks = requests.get(jwks_url).json() # JSON object containing public keys from that endpoint
+        
+        header = jwt.get_unverified_header(token)
+        rsa_key = {}
+        for key in jwks["keys"]:
+            if key["kid"] == header["kid"]:
+                rsa_key = {
+                    "kty": key["kty"], # KEY TYPE
+                    "kid": key["kid"], # KEY ID
+                    "use": key["use"], # Usage
+                    "n": key["n"],     # Modulus
+                    "e": key["e"]      # Exponent
+                }
+                
+        if not rsa_key:
+            raise HTTPException(status_code=401, detail="Invalid token header")
+            
+        payload = jwt.decode(
+            token,
+            rsa_key,
+            algorithms=["RS256"],
+            audience=os.getenv("AUTH0_AUDIENCE"),
+            issuer=f"https://{os.getenv('AUTH0_DOMAIN')}/"
+        )
+        return payload
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    
+
+"""
+[Client Request]  
+       ↓
+[Authorization: Bearer <JWT>]  
+       ↓
+Extract JWT from Header  
+       ↓
+Fetch JWKS from Auth0  
+       ↓
+Find Matching Public Key (via kid)  
+       ↓
+Verify Signature & Validate Claims  
+       ↓
+If valid → Return Payload  
+If invalid → 401 Error
+
+"""
+</file>
+
+<file path="backend/dockerfile">
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements first
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all your application files
+COPY . .
+
+EXPOSE 8080
+
+# Use uvicorn, not gunicorn, and make sure it points to your main.py file
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+</file>
+
+<file path="backend/migrations/env.py">
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config
+from sqlalchemy import pool
+
+from alembic import context
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# add your model's MetaData object here
+# for 'autogenerate' support
+# from myapp import mymodel
+# target_metadata = mymodel.Base.metadata
+target_metadata = None
+
+# other values from the config, defined by the needs of env.py,
+# can be acquired:
+# my_important_option = config.get_main_option("my_important_option")
+# ... etc.
+
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+</file>
+
+<file path="backend/migrations/README">
+Generic single-database configuration.
+</file>
+
+<file path="backend/migrations/script.py.mako">
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    ${downgrades if downgrades else "pass"}
+</file>
+
+<file path="backend/routers/export.py">
+import pandas as pd
+from ..application.cache import cache;
+from .courses import get_students_in_course_helper
+from models import get_db
+from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
+
+
+async def getCSVData(courseID: int, db: Session = Depends(get_db)):
+    enrolledin_key: str = f"enrolledin:{courseID}" # Key to access students enrolled in course
+    result = {
+        "Student Name": [],
+        "Course": [],
+        "UTORID": [],
+        "Group Number": [],
+        "AF With": [],
+        "AF Without": []
+    }
+    #Get the group ids, then from that get students in groups then set the data, then convert to csv
+    # group_key = f"course:{courseID}"
+    # group_ids = cache.get(group_key)
+    groups = await getGroups(courseID=courseID, db=db)
+
+    for group in groups:
+        students = await getStudents(courseID=courseID, db=db)
+        student_names = [student['name'] for student in students]
+        student_utorids = [student['utorid'] for student in students]
+        group_numbers = [group['groupNumber']] * len(students)
+        
+        #get students in group
+
+
+    student_ids = cache.get(enrolledin_key)
+
+    if student_ids == None:
+        cache_data = get_students_in_course_helper(courseID=courseID, db=db)
+        cache.set(key=enrolledin_key, value=cache_data, ttl_seconds=600)
+        student_ids = cache.get(enrolledin_key)
+    
+    for studentID in student_ids:
+        student_key = f"student:{studentID}"
+        student_data = cache.get(key=student_key)
+
+        if student_data == None:
+            pass
+        result["Student Name"].append(student_data["name"])
+        result["UTORID"].append(student_data["utorid"])
+
+
+
+
+        
+    df = pd.DataFrame(result)
+    csvfile = df.to_csv('adjustmentfactors.csv', index=False) 
+    return csvfile
+
+
+async def getGroups(courseID: int, db: Session = Depends(get_db)):
+    course = db.query(Course).filter(Course.id == courseID).first()
+    groups = db.query(Group).filter(Group.courseCode == course.code).all()
+    return groups
+
+async def getStudents(groupID: int, db: Session = Depends(get_db)):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+</file>
+
+<file path="backend/routers/factor.py">
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from models import get_db
+from routers.groups import StudentSurveyBase
+import pandas as pd
+
+
+router = APIRouter()
+
+class StudentAdjFactor(BaseModel):
+    name: str
+    courseCode: str 
+    utorid: str
+    courseid: int
+    groupNumber: int
+    factorWithSelf: float
+    factorWithoutSelf: float
+    
+
+async def get_factors(courseID: int, db: Session = Depends(get_db)):
+    factordata = db.query(StudentAdjustmentFactor).filter(
+        StudentAdjustmentFactor.courseid == courseID,
+    ).all()
+    return factordata
+
+@router.get('/fetchFactors')
+async def fetch_factors(courseID: int, db: Session = Depends(get_db)):
+    factordata = await get_factors(courseID=courseID, db=db)
+    return factordata
+
+@router.get('/makeCSV')
+async def make_CSV(courseID: int, db: Session = Depends(get_db)):
+    factordata = await get_factors(courseID=courseID, db=db)
+    data_dicts = [obj.__dict__ for obj in factordata]
+    for d in data_dicts:
+        d.pop('_sa_instance_state', None)
+    df = pd.DataFrame(data_dicts)
+    
+    csv_data = df.to_csv(index=False)
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=students.csv"}
+    )
+
+
+async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    if not includeSelf:
+        data = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+        
+    num_instances = len(data)
+    if num_instances == 0:
+        print("did not fill out yet")
+        return None
+
+    
+    total = 0
+    for instance in data:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    denominator = total / num_instances
+
+    return denominator
+
+async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
+    if denominator == 0:
+        return None
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
+    
+    if not includeSelf:
+        student_instances = [
+            d for d in student_instances 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+    
+    num_instances = len(student_instances)
+
+
+
+    total = 0
+    if num_instances == 0:
+        return 0
+    for instance in student_instances:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    numerator = total / num_instances
+    factor = numerator / denominator
+    return factor
+
+async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
+    instances = db.query(StudentSurvey).filter(
+        StudentSurvey.course_id == courseID,
+        StudentSurvey.group_id == groupID
+    ).all()
+    
+    # Don't raise exception for empty results - let caller handle it
+    return instances
+
+
+async def getStudentsInGroup(groupID: int, db: Session):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+
+
+
+async def getGroup(groupID: int, db: Session):
+    group: Group = db.query(Group).filter(Group.id == groupID).first()
+    return group.groupNumber
+    
+
+@router.post("/addmultiple/")
+async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
+    try:
+        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
+        groupNumber: int = await getGroup(groupID=groupID, db=db)
+        # Get students in the group
+        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
+        print(f"Found {len(students)} students")
+        
+        if not students:
+            raise HTTPException(status_code=404, detail="No students found in this group")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        results = []
+        skipped_students = []
+        
+        for student in students:
+            print(f"Processing student: {student.name} (ID: {student.student_id})")
+            
+            try:
+                # Calculate denominator without self-evaluation
+                denominatorw = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                factorw = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    denominator=denominatorw,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                denominatorwo = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                factorwo = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    denominator=denominatorwo,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Check if we got valid factors
+                if factorwo is None and factorw is None:
+                    print(f"Skipping {student.name} - insufficient evaluation data")
+                    skipped_students.append({
+                        "student_id": student.student_id,
+                        "name": student.name,
+                        "reason": "Insufficient evaluation data"
+                    })
+                    continue
+                
+                # Create Pydantic model
+                data: StudentAdjFactor = StudentAdjFactor(
+                    name=student.name,
+                    courseCode=courseCode,
+                    utorid=student.utorid,
+                    groupNumber=groupNumber,
+                    courseid=courseID,
+                    factorWithoutSelf=factorwo,
+                    factorWithSelf=factorw
+                )
+                
+                # Create database instance
+                db_instance = StudentAdjustmentFactor(**data.model_dump())
+                db.add(db_instance)
+                print(f"Added {student.name} to database session")
+                
+                results.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "factorWithSelf": factorw,
+                    "factorWithoutSelf": factorwo
+                })
+                
+            except Exception as e:
+                print(f"Error processing student {student.name}: {str(e)}")
+                skipped_students.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "reason": str(e)
+                })
+                continue
+        
+        # Only commit if we have successful results
+        if results:
+            db.commit()
+            print("Successfully committed all changes")
+        else:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
+        
+        response = {
+            "message": f"Successfully processed {len(results)} students",
+            "results": results
+        }
+        
+        if skipped_students:
+            response["skipped_students"] = skipped_students
+            response["message"] += f", skipped {len(skipped_students)} students"
+        
+        return response
+        
+    except HTTPException as he:
+        print(f"HTTP Exception: {he.detail}")
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
+
+
+
+
+@router.post('/addData/')
+async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
+    try:
+        print(f"Processing single student data for studentID: {studentID}")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        # Calculate factors
+        denominatorw = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=True, 
+            db=db
+        )
+        
+        factorw = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorw,
+            includeSelf=True, 
+            db=db
+        )
+        
+        denominatorwo = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=False, 
+            db=db
+        )
+        
+        factorwo = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorwo,
+            includeSelf=False, 
+            db=db
+        )
+        
+        # Check if we got valid factors
+        if factorwo is None or factorw is None:
+            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
+        
+        # Get student info
+        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
+        if not student_row:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Create data model
+        data: StudentAdjFactor = StudentAdjFactor(
+            name=student_row.name,
+            courseCode=courseCode,
+            utorid=student_row.utorid,
+            groupNumber=groupID,
+            courseid=courseID,
+            factorWithoutSelf=factorwo,
+            factorWithSelf=factorw
+        )
+        
+        # Save to database
+        db_instance = StudentAdjustmentFactor(**data.model_dump())
+        db.add(db_instance)
+        db.commit()
+        db.refresh(db_instance)
+        
+        return {
+            "message": "Factor added to database successfully",
+            "data": {
+                "student_id": studentID,
+                "name": student_row.name,
+                "factorWithSelf": factorw,
+                "factorWithoutSelf": factorwo
+            }
+        }
+        
+    except HTTPException as he:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
+</file>
+
+<file path="backend/routers/factor1.py">
+from fastapi import APIRouter, Depends, HTTPException
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from models import get_db
+from routers.groups import StudentSurveyBase
+
+
+router = APIRouter()
+
+class StudentAdjFactor(BaseModel):
+    name: str
+    courseCode: str 
+    utorid: str
+    courseid: int
+    groupNumber: int
+    factorWithSelf: float
+    factorWithoutSelf: float
+    
+
+
+async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    if not includeSelf:
+        data = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+        
+    num_instances = len(data)
+    if num_instances == 0:
+        print("did not fill out yet")
+        return None
+
+    
+    total = 0
+    for instance in data:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    denominator = total / num_instances
+
+    return denominator
+
+async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
+    if denominator == 0:
+        return None
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
+    
+    if not includeSelf:
+        student_instances = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+    
+    num_instances = len(student_instances)
+
+
+    if num_instances == 0:
+        return None
+    total = 0
+
+    for instance in student_instances:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    numerator = total / num_instances
+    factor = numerator / denominator
+    return factor
+
+async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
+    instances = db.query(StudentSurvey).filter(
+        StudentSurvey.course_id == courseID,
+        StudentSurvey.group_id == groupID
+    ).all()
+    
+    # Don't raise exception for empty results - let caller handle it
+    return instances
+
+
+async def getStudentsInGroup(groupID: int, db: Session):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+
+@router.post("/addmultiple/")
+async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
+    try:
+        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
+        
+        # Get students in the group
+        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
+        print(f"Found {len(students)} students")
+        
+        if not students:
+            raise HTTPException(status_code=404, detail="No students found in this group")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        results = []
+        skipped_students = []
+        
+        for student in students:
+            print(f"Processing student: {student.name} (ID: {student.student_id})")
+            
+            try:
+                # Calculate denominator without self-evaluation
+                denominatorwo = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Calculate factor without self-evaluation
+                factorwo = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    denominator=denominatorwo,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Calculate denominator with self-evaluation
+                denominatorw = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                # Calculate factor with self-evaluation
+                factorw = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.student_id,
+                    denominator=denominatorw,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                # Check if we got valid factors
+                if factorwo is None and factorw is None:
+                    print(f"Skipping {student.name} - insufficient evaluation data")
+                    skipped_students.append({
+                        "student_id": student.student_id,
+                        "name": student.name,
+                        "reason": "Insufficient evaluation data"
+                    })
+                    continue
+                
+                # Create Pydantic model
+                data: StudentAdjFactor = StudentAdjFactor(
+                    name=student.name,
+                    courseCode=courseCode,
+                    utorid=student.utorid,
+                    groupNumber=groupID,
+                    courseid=courseID,
+                    factorWithoutSelf=factorwo,
+                    factorWithSelf=factorw
+                )
+                
+                # Create database instance
+                db_instance = StudentAdjustmentFactor(**data.model_dump())
+                db.add(db_instance)
+                print(f"Added {student.name} to database session")
+                
+                results.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "factorWithSelf": factorw,
+                    "factorWithoutSelf": factorwo
+                })
+                
+            except Exception as e:
+                print(f"Error processing student {student.name}: {str(e)}")
+                skipped_students.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "reason": str(e)
+                })
+                continue
+        
+        # Only commit if we have successful results
+        if results:
+            db.commit()
+            print("Successfully committed all changes")
+        else:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
+        
+        response = {
+            "message": f"Successfully processed {len(results)} students",
+            "results": results
+        }
+        
+        if skipped_students:
+            response["skipped_students"] = skipped_students
+            response["message"] += f", skipped {len(skipped_students)} students"
+        
+        return response
+        
+    except HTTPException as he:
+        print(f"HTTP Exception: {he.detail}")
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
+
+@router.post('/addData/')
+async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
+    try:
+        print(f"Processing single student data for studentID: {studentID}")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        # Calculate factors
+        denominatorw = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=True, 
+            db=db
+        )
+        
+        factorw = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorw,
+            includeSelf=True, 
+            db=db
+        )
+        
+        denominatorwo = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=False, 
+            db=db
+        )
+        
+        factorwo = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorwo,
+            includeSelf=False, 
+            db=db
+        )
+        
+        # Check if we got valid factors
+        if factorwo is None or factorw is None:
+            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
+        
+        # Get student info
+        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
+        if not student_row:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Create data model
+        data: StudentAdjFactor = StudentAdjFactor(
+            name=student_row.name,
+            courseCode=courseCode,
+            utorid=student_row.utorid,
+            groupNumber=groupID,
+            courseid=courseID,
+            factorWithoutSelf=factorwo,
+            factorWithSelf=factorw
+        )
+        
+        # Save to database
+        db_instance = StudentAdjustmentFactor(**data.model_dump())
+        db.add(db_instance)
+        db.commit()
+        db.refresh(db_instance)
+        
+        return {
+            "message": "Factor added to database successfully",
+            "data": {
+                "student_id": studentID,
+                "name": student_row.name,
+                "factorWithSelf": factorw,
+                "factorWithoutSelf": factorwo
+            }
+        }
+        
+    except HTTPException as he:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
+</file>
+
+<file path="backend/routers/test.py">
+from fastapi import APIRouter, Depends
+from dependencies.auth import validate_token
+
+router = APIRouter()
+
+@router.get("/protected-route")
+async def protected_route(user: dict = Depends(validate_token)):
+    return {
+        "message": "Authenticated!",
+        "user_info": {
+            "sub": user.get("sub"),
+            "email": user.get("email")
+        }
+    }
+</file>
+
+<file path="backend/schemas.py">
+from pydantic import BaseModel
+
+class StudentCreate(BaseModel):
+    name: str
+    email: str
+    id: int
+</file>
+
+<file path="backend/utils.py">
+from typing import Optional
+
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import SecurityScopes, HTTPAuthorizationCredentials, HTTPBearer
+
+from application.config import get_settings
+
+
+class UnauthorizedException(HTTPException):
+    def __init__(self, detail: str, **kwargs):
+        """Returns HTTP 403"""
+        super().__init__(status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+class UnauthenticatedException(HTTPException):
+    def __init__(self):
+        super().__init__(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Requires authentication"
+        )
+
+
+class VerifyToken:
+    """Does all the token verification using PyJWT"""
+
+    def __init__(self):
+        self.config = get_settings()
+
+        # This gets the JWKS from a given URL and does processing so you can
+        # use any of the keys available
+        jwks_url = f'https://{self.config.auth0_domain}/.well-known/jwks.json'
+        self.jwks_client = jwt.PyJWKClient(jwks_url)
+
+    async def verify(self,
+                     security_scopes: SecurityScopes,
+                     token: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer())
+                     ):
+        if token is None:
+            raise UnauthenticatedException
+
+        # This gets the 'kid' from the passed token
+        try:
+            signing_key = self.jwks_client.get_signing_key_from_jwt(
+                token.credentials
+            ).key
+        except jwt.exceptions.PyJWKClientError as error:
+            raise UnauthorizedException(str(error))
+        except jwt.exceptions.DecodeError as error:
+            raise UnauthorizedException(str(error))
+
+        try:
+            payload = jwt.decode(
+                token.credentials,
+                signing_key,
+                algorithms=self.config.auth0_algorithms,
+                audience=self.config.auth0_api_audience,
+                issuer=self.config.auth0_issuer,
+            )
+        except Exception as error:
+            raise UnauthorizedException(str(error))
+
+        if len(security_scopes.scopes) > 0:
+            self._check_claims(payload, 'scope', security_scopes.scopes)
+
+        return payload
+
+    def _check_claims(self, payload, claim_name, expected_value):
+        if claim_name not in payload:
+            raise UnauthorizedException(detail=f'No claim "{claim_name}" found in token')
+
+        payload_claim = payload[claim_name]
+
+        if claim_name == 'scope':
+            payload_claim = payload[claim_name].split(' ')
+
+        for value in expected_value:
+            if value not in payload_claim:
+                raise UnauthorizedException(detail=f'Missing "{claim_name}" scope')
+</file>
+
+<file path="frontend/.gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="frontend/components.json">
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "src/app/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@/components",
+    "utils": "@/lib/utils",
+    "ui": "@/components/ui",
+    "lib": "@/lib",
+    "hooks": "@/hooks"
+  },
+  "iconLibrary": "lucide"
+}
+</file>
+
+<file path="frontend/postcss.config.mjs">
+const config = {
+  plugins: ["@tailwindcss/postcss"],
+};
+
+export default config;
+</file>
+
+<file path="frontend/public/file.svg">
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+</file>
+
+<file path="frontend/public/globe.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+</file>
+
+<file path="frontend/public/next.svg">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+</file>
+
+<file path="frontend/public/vercel.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+</file>
+
+<file path="frontend/public/window.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+</file>
+
+<file path="frontend/README.md">
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+</file>
+
 <file path="frontend/repomix-output.xml">
 This file is a merged representation of the entire codebase, combined into a single document by Repomix.
 
@@ -4749,1538 +6160,6 @@ export default function UserSync({ children }: { children: React.ReactNode }) {
 </files>
 </file>
 
-<file path=".gitattributes">
-# Auto detect text files and perform LF normalization
-* text=auto
-</file>
-
-<file path="backend/.env.prod">
-DATABASE_URL=postgresql://shawn:051671Dashui!@localhost:5432/peer
-AUTH0_DOMAIN=dev-4m08esq3iy51y7tm.us.auth0.com
-AUTH0_API_AUDIENCE=https://peerassessment.com
-</file>
-
-<file path="backend/alembic/env.py">
-from logging.config import fileConfig
-from models import Base  # Import your Base
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
-from alembic import context
-
-
-
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
-config = context.config
-
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
-
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = Base.metadata
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
-
-
-def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
-    url = config.get_main_option("sqlalchemy.url")
-    context.configure(
-        url=url,
-        target_metadata=target_metadata,
-        literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
-    )
-
-    with context.begin_transaction():
-        context.run_migrations()
-
-
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
-
-
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
-</file>
-
-<file path="backend/alembic/README">
-Generic single-database configuration.
-</file>
-
-<file path="backend/alembic/script.py.mako">
-"""${message}
-
-Revision ID: ${up_revision}
-Revises: ${down_revision | comma,n}
-Create Date: ${create_date}
-
-"""
-from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
-${imports if imports else ""}
-
-# revision identifiers, used by Alembic.
-revision: str = ${repr(up_revision)}
-down_revision: Union[str, None] = ${repr(down_revision)}
-branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
-depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
-
-
-def upgrade() -> None:
-    """Upgrade schema."""
-    ${upgrades if upgrades else "pass"}
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    ${downgrades if downgrades else "pass"}
-</file>
-
-<file path="backend/application/cache.py">
-from fastapi import FastAPI
-from datetime import datetime, timedelta
-import asyncio
-from typing import Optional, Any
-
-class AppCache:
-    def __init__(self, max_size: int = 1000):
-        self._cache = {}
-        self._access_times = {}
-        self._max_size = max_size
-    
-    def get(self, key: str) -> Optional[Any]:
-        if key in self._cache:
-            value, expiry = self._cache[key]
-            if datetime.now() < expiry:
-                self._access_times[key] = datetime.now()
-                return value
-            else:
-                self._evict(key)
-        return None
-    
-    def set(self, key: str, value: Any, ttl_seconds: int = 300):
-        if len(self._cache) >= self._max_size:
-            self._evict_lru()
-        
-        expiry = datetime.now() + timedelta(seconds=ttl_seconds)
-        self._cache[key] = (value, expiry)
-        self._access_times[key] = datetime.now()
-    
-    def _evict(self, key: str):
-        self._cache.pop(key, None)
-        self._access_times.pop(key, None)
-    
-    def _evict_lru(self):
-        if not self._access_times:
-            return
-        oldest_key = min(self._access_times.keys(), key=lambda k: self._access_times[k])
-        self._evict(oldest_key)
-
-# Global cache instance
-cache = AppCache(max_size=5000)  
-
-# EXAMPLE USAGE:
-# @app.get("/users/{user_id}")
-# async def get_user(user_id: int):
-#     cache_key = f"user:{user_id}"
-    
-#     cached_user = cache.get(cache_key)
-#     if cached_user:
-#         return cached_user
-    
-#     # Fetch from database
-#     user_data = await get_user_from_db(user_id)
-    
-#     # Cache for 10 minutes
-#     cache.set(cache_key, user_data, ttl_seconds=600)
-    
-#     return user_data
-</file>
-
-<file path="backend/application/config.py">
-from functools import lru_cache
-
-from pydantic_settings import BaseSettings
-
-
-class Settings(BaseSettings):
-    auth0_domain: str
-    auth0_api_audience: str
-    auth0_issuer: str
-    auth0_algorithms: str
-
-    class Config:
-        env_file = ".env"
-
-
-@lru_cache()
-def get_settings():
-    return Settings()
-</file>
-
-<file path="backend/dependencies/auth.py">
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
-import requests
-import os
-
-#set up bearer token authentication scheme, HTTPBearer() looks for tokens in the "Authoriation" header
-security = HTTPBearer()
-
-# extract the jwt from the header
-async def validate_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    try:
-        token = credentials.credentials #get the raw token string from header
-        # get keys
-        jwks_url = f"https://{os.getenv('AUTH0_DOMAIN')}/.well-known/jwks.json" #JWKS (JSON Web Key Sets) rae a collection of public cryptographic keys used to verify JSON Web Tokens, Auth0 exposes these keys at this endpoint
-        jwks = requests.get(jwks_url).json() # JSON object containing public keys from that endpoint
-        
-        header = jwt.get_unverified_header(token)
-        rsa_key = {}
-        for key in jwks["keys"]:
-            if key["kid"] == header["kid"]:
-                rsa_key = {
-                    "kty": key["kty"], # KEY TYPE
-                    "kid": key["kid"], # KEY ID
-                    "use": key["use"], # Usage
-                    "n": key["n"],     # Modulus
-                    "e": key["e"]      # Exponent
-                }
-                
-        if not rsa_key:
-            raise HTTPException(status_code=401, detail="Invalid token header")
-            
-        payload = jwt.decode(
-            token,
-            rsa_key,
-            algorithms=["RS256"],
-            audience=os.getenv("AUTH0_AUDIENCE"),
-            issuer=f"https://{os.getenv('AUTH0_DOMAIN')}/"
-        )
-        return payload
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-    
-
-"""
-[Client Request]  
-       ↓
-[Authorization: Bearer <JWT>]  
-       ↓
-Extract JWT from Header  
-       ↓
-Fetch JWKS from Auth0  
-       ↓
-Find Matching Public Key (via kid)  
-       ↓
-Verify Signature & Validate Claims  
-       ↓
-If valid → Return Payload  
-If invalid → 401 Error
-
-"""
-</file>
-
-<file path="backend/dockerfile">
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Copy requirements first
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy all your application files
-COPY . .
-
-EXPOSE 8080
-
-# Use uvicorn, not gunicorn, and make sure it points to your main.py file
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
-</file>
-
-<file path="backend/migrations/env.py">
-from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
-from alembic import context
-
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
-config = context.config
-
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
-
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = None
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
-
-
-def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
-    url = config.get_main_option("sqlalchemy.url")
-    context.configure(
-        url=url,
-        target_metadata=target_metadata,
-        literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
-    )
-
-    with context.begin_transaction():
-        context.run_migrations()
-
-
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
-
-
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
-</file>
-
-<file path="backend/migrations/README">
-Generic single-database configuration.
-</file>
-
-<file path="backend/migrations/script.py.mako">
-"""${message}
-
-Revision ID: ${up_revision}
-Revises: ${down_revision | comma,n}
-Create Date: ${create_date}
-
-"""
-from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
-${imports if imports else ""}
-
-# revision identifiers, used by Alembic.
-revision: str = ${repr(up_revision)}
-down_revision: Union[str, None] = ${repr(down_revision)}
-branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
-depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
-
-
-def upgrade() -> None:
-    """Upgrade schema."""
-    ${upgrades if upgrades else "pass"}
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    ${downgrades if downgrades else "pass"}
-</file>
-
-<file path="backend/routers/export.py">
-import pandas as pd
-from ..application.cache import cache;
-from .courses import get_students_in_course_helper
-from models import get_db
-from sqlalchemy.orm import Session
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
-
-
-async def getCSVData(courseID: int, db: Session = Depends(get_db)):
-    enrolledin_key: str = f"enrolledin:{courseID}" # Key to access students enrolled in course
-    result = {
-        "Student Name": [],
-        "Course": [],
-        "UTORID": [],
-        "Group Number": [],
-        "AF With": [],
-        "AF Without": []
-    }
-    #Get the group ids, then from that get students in groups then set the data, then convert to csv
-    # group_key = f"course:{courseID}"
-    # group_ids = cache.get(group_key)
-    groups = await getGroups(courseID=courseID, db=db)
-
-    for group in groups:
-        students = await getStudents(courseID=courseID, db=db)
-        student_names = [student['name'] for student in students]
-        student_utorids = [student['utorid'] for student in students]
-        group_numbers = [group['groupNumber']] * len(students)
-        
-        #get students in group
-
-
-    student_ids = cache.get(enrolledin_key)
-
-    if student_ids == None:
-        cache_data = get_students_in_course_helper(courseID=courseID, db=db)
-        cache.set(key=enrolledin_key, value=cache_data, ttl_seconds=600)
-        student_ids = cache.get(enrolledin_key)
-    
-    for studentID in student_ids:
-        student_key = f"student:{studentID}"
-        student_data = cache.get(key=student_key)
-
-        if student_data == None:
-            pass
-        result["Student Name"].append(student_data["name"])
-        result["UTORID"].append(student_data["utorid"])
-
-
-
-
-        
-    df = pd.DataFrame(result)
-    csvfile = df.to_csv('adjustmentfactors.csv', index=False) 
-    return csvfile
-
-
-async def getGroups(courseID: int, db: Session = Depends(get_db)):
-    course = db.query(Course).filter(Course.id == courseID).first()
-    groups = db.query(Group).filter(Group.courseCode == course.code).all()
-    return groups
-
-async def getStudents(groupID: int, db: Session = Depends(get_db)):
-    group = db.query(Group).filter(
-        Group.id == groupID,
-    ).first()
-
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found in this course")
-
-    # Query StudentGroup directly with the provided groupID
-    student_group_relations = db.query(StudentGroup).filter(
-        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
-    ).all()
-
-    # 3. Fixed list comprehension syntax
-    studentIDs = [row.student_id for row in student_group_relations]
-
-    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
-    return students
-</file>
-
-<file path="backend/routers/factor.py">
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional, List
-from models import get_db
-from routers.groups import StudentSurveyBase
-import pandas as pd
-
-
-router = APIRouter()
-
-class StudentAdjFactor(BaseModel):
-    name: str
-    courseCode: str 
-    utorid: str
-    courseid: int
-    groupNumber: int
-    factorWithSelf: float
-    factorWithoutSelf: float
-    
-
-async def get_factors(courseID: int, db: Session = Depends(get_db)):
-    factordata = db.query(StudentAdjustmentFactor).filter(
-        StudentAdjustmentFactor.courseid == courseID,
-    ).all()
-    return factordata
-
-@router.get('/fetchFactors')
-async def fetch_factors(courseID: int, db: Session = Depends(get_db)):
-    factordata = await get_factors(courseID=courseID, db=db)
-    return factordata
-
-@router.get('/makeCSV')
-async def make_CSV(courseID: int, db: Session = Depends(get_db)):
-    factordata = await get_factors(courseID=courseID, db=db)
-    data_dicts = [obj.__dict__ for obj in factordata]
-    for d in data_dicts:
-        d.pop('_sa_instance_state', None)
-    df = pd.DataFrame(data_dicts)
-    
-    csv_data = df.to_csv(index=False)
-    return Response(
-        content=csv_data,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=students.csv"}
-    )
-
-
-async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
-    data = await get_data(groupID=groupID, courseID=courseID, db=db)
-    if not includeSelf:
-        data = [
-            d for d in data 
-            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
-        ]
-        
-    num_instances = len(data)
-    if num_instances == 0:
-        print("did not fill out yet")
-        return None
-
-    
-    total = 0
-    for instance in data:
-        total = total + instance.answer  # Changed from instance.get("answer")
-    denominator = total / num_instances
-
-    return denominator
-
-async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
-    if denominator == 0:
-        return None
-    data = await get_data(groupID=groupID, courseID=courseID, db=db)
-    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
-    
-    if not includeSelf:
-        student_instances = [
-            d for d in student_instances 
-            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
-        ]
-    
-    num_instances = len(student_instances)
-
-
-
-    total = 0
-    if num_instances == 0:
-        return 0
-    for instance in student_instances:
-        total = total + instance.answer  # Changed from instance.get("answer")
-    numerator = total / num_instances
-    factor = numerator / denominator
-    return factor
-
-async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
-    instances = db.query(StudentSurvey).filter(
-        StudentSurvey.course_id == courseID,
-        StudentSurvey.group_id == groupID
-    ).all()
-    
-    # Don't raise exception for empty results - let caller handle it
-    return instances
-
-
-async def getStudentsInGroup(groupID: int, db: Session):
-    group = db.query(Group).filter(
-        Group.id == groupID,
-    ).first()
-
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found in this course")
-
-    # Query StudentGroup directly with the provided groupID
-    student_group_relations = db.query(StudentGroup).filter(
-        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
-    ).all()
-
-    # 3. Fixed list comprehension syntax
-    studentIDs = [row.student_id for row in student_group_relations]
-
-    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
-    return students
-
-
-
-async def getGroup(groupID: int, db: Session):
-    group: Group = db.query(Group).filter(Group.id == groupID).first()
-    return group.groupNumber
-    
-
-@router.post("/addmultiple/")
-async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
-    try:
-        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
-        groupNumber: int = await getGroup(groupID=groupID, db=db)
-        # Get students in the group
-        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
-        print(f"Found {len(students)} students")
-        
-        if not students:
-            raise HTTPException(status_code=404, detail="No students found in this group")
-        
-        # Check if there are any survey responses at all
-        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
-        if not survey_data:
-            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
-        
-        results = []
-        skipped_students = []
-        
-        for student in students:
-            print(f"Processing student: {student.name} (ID: {student.student_id})")
-            
-            try:
-                # Calculate denominator without self-evaluation
-                denominatorw = await get_denominator(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    includeSelf=True, 
-                    db=db
-                )
-                
-                factorw = await calculateFactor(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    denominator=denominatorw,
-                    includeSelf=True, 
-                    db=db
-                )
-                
-                denominatorwo = await get_denominator(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    includeSelf=False, 
-                    db=db
-                )
-                
-                factorwo = await calculateFactor(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    denominator=denominatorwo,
-                    includeSelf=False, 
-                    db=db
-                )
-                
-                # Check if we got valid factors
-                if factorwo is None and factorw is None:
-                    print(f"Skipping {student.name} - insufficient evaluation data")
-                    skipped_students.append({
-                        "student_id": student.student_id,
-                        "name": student.name,
-                        "reason": "Insufficient evaluation data"
-                    })
-                    continue
-                
-                # Create Pydantic model
-                data: StudentAdjFactor = StudentAdjFactor(
-                    name=student.name,
-                    courseCode=courseCode,
-                    utorid=student.utorid,
-                    groupNumber=groupNumber,
-                    courseid=courseID,
-                    factorWithoutSelf=factorwo,
-                    factorWithSelf=factorw
-                )
-                
-                # Create database instance
-                db_instance = StudentAdjustmentFactor(**data.model_dump())
-                db.add(db_instance)
-                print(f"Added {student.name} to database session")
-                
-                results.append({
-                    "student_id": student.student_id,
-                    "name": student.name,
-                    "factorWithSelf": factorw,
-                    "factorWithoutSelf": factorwo
-                })
-                
-            except Exception as e:
-                print(f"Error processing student {student.name}: {str(e)}")
-                skipped_students.append({
-                    "student_id": student.student_id,
-                    "name": student.name,
-                    "reason": str(e)
-                })
-                continue
-        
-        # Only commit if we have successful results
-        if results:
-            db.commit()
-            print("Successfully committed all changes")
-        else:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
-        
-        response = {
-            "message": f"Successfully processed {len(results)} students",
-            "results": results
-        }
-        
-        if skipped_students:
-            response["skipped_students"] = skipped_students
-            response["message"] += f", skipped {len(skipped_students)} students"
-        
-        return response
-        
-    except HTTPException as he:
-        print(f"HTTP Exception: {he.detail}")
-        db.rollback()
-        raise
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
-
-
-
-
-@router.post('/addData/')
-async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
-    try:
-        print(f"Processing single student data for studentID: {studentID}")
-        
-        # Check if there are any survey responses at all
-        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
-        if not survey_data:
-            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
-        
-        # Calculate factors
-        denominatorw = await get_denominator(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            includeSelf=True, 
-            db=db
-        )
-        
-        factorw = await calculateFactor(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            denominator=denominatorw,
-            includeSelf=True, 
-            db=db
-        )
-        
-        denominatorwo = await get_denominator(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            includeSelf=False, 
-            db=db
-        )
-        
-        factorwo = await calculateFactor(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            denominator=denominatorwo,
-            includeSelf=False, 
-            db=db
-        )
-        
-        # Check if we got valid factors
-        if factorwo is None or factorw is None:
-            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
-        
-        # Get student info
-        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
-        if not student_row:
-            raise HTTPException(status_code=404, detail="Student not found")
-        
-        # Create data model
-        data: StudentAdjFactor = StudentAdjFactor(
-            name=student_row.name,
-            courseCode=courseCode,
-            utorid=student_row.utorid,
-            groupNumber=groupID,
-            courseid=courseID,
-            factorWithoutSelf=factorwo,
-            factorWithSelf=factorw
-        )
-        
-        # Save to database
-        db_instance = StudentAdjustmentFactor(**data.model_dump())
-        db.add(db_instance)
-        db.commit()
-        db.refresh(db_instance)
-        
-        return {
-            "message": "Factor added to database successfully",
-            "data": {
-                "student_id": studentID,
-                "name": student_row.name,
-                "factorWithSelf": factorw,
-                "factorWithoutSelf": factorwo
-            }
-        }
-        
-    except HTTPException as he:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
-</file>
-
-<file path="backend/routers/factor1.py">
-from fastapi import APIRouter, Depends, HTTPException
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional, List
-from models import get_db
-from routers.groups import StudentSurveyBase
-
-
-router = APIRouter()
-
-class StudentAdjFactor(BaseModel):
-    name: str
-    courseCode: str 
-    utorid: str
-    courseid: int
-    groupNumber: int
-    factorWithSelf: float
-    factorWithoutSelf: float
-    
-
-
-async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
-    data = await get_data(groupID=groupID, courseID=courseID, db=db)
-    if not includeSelf:
-        data = [
-            d for d in data 
-            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
-        ]
-        
-    num_instances = len(data)
-    if num_instances == 0:
-        print("did not fill out yet")
-        return None
-
-    
-    total = 0
-    for instance in data:
-        total = total + instance.answer  # Changed from instance.get("answer")
-    denominator = total / num_instances
-
-    return denominator
-
-async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
-    if denominator == 0:
-        return None
-    data = await get_data(groupID=groupID, courseID=courseID, db=db)
-    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
-    
-    if not includeSelf:
-        student_instances = [
-            d for d in data 
-            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
-        ]
-    
-    num_instances = len(student_instances)
-
-
-    if num_instances == 0:
-        return None
-    total = 0
-
-    for instance in student_instances:
-        total = total + instance.answer  # Changed from instance.get("answer")
-    numerator = total / num_instances
-    factor = numerator / denominator
-    return factor
-
-async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
-    instances = db.query(StudentSurvey).filter(
-        StudentSurvey.course_id == courseID,
-        StudentSurvey.group_id == groupID
-    ).all()
-    
-    # Don't raise exception for empty results - let caller handle it
-    return instances
-
-
-async def getStudentsInGroup(groupID: int, db: Session):
-    group = db.query(Group).filter(
-        Group.id == groupID,
-    ).first()
-
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found in this course")
-
-    # Query StudentGroup directly with the provided groupID
-    student_group_relations = db.query(StudentGroup).filter(
-        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
-    ).all()
-
-    # 3. Fixed list comprehension syntax
-    studentIDs = [row.student_id for row in student_group_relations]
-
-    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
-    return students
-
-@router.post("/addmultiple/")
-async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
-    try:
-        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
-        
-        # Get students in the group
-        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
-        print(f"Found {len(students)} students")
-        
-        if not students:
-            raise HTTPException(status_code=404, detail="No students found in this group")
-        
-        # Check if there are any survey responses at all
-        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
-        if not survey_data:
-            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
-        
-        results = []
-        skipped_students = []
-        
-        for student in students:
-            print(f"Processing student: {student.name} (ID: {student.student_id})")
-            
-            try:
-                # Calculate denominator without self-evaluation
-                denominatorwo = await get_denominator(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.student_id,
-                    includeSelf=False, 
-                    db=db
-                )
-                
-                # Calculate factor without self-evaluation
-                factorwo = await calculateFactor(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.student_id,
-                    denominator=denominatorwo,
-                    includeSelf=False, 
-                    db=db
-                )
-                
-                # Calculate denominator with self-evaluation
-                denominatorw = await get_denominator(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.student_id,
-                    includeSelf=True, 
-                    db=db
-                )
-                
-                # Calculate factor with self-evaluation
-                factorw = await calculateFactor(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.student_id,
-                    denominator=denominatorw,
-                    includeSelf=True, 
-                    db=db
-                )
-                
-                # Check if we got valid factors
-                if factorwo is None and factorw is None:
-                    print(f"Skipping {student.name} - insufficient evaluation data")
-                    skipped_students.append({
-                        "student_id": student.student_id,
-                        "name": student.name,
-                        "reason": "Insufficient evaluation data"
-                    })
-                    continue
-                
-                # Create Pydantic model
-                data: StudentAdjFactor = StudentAdjFactor(
-                    name=student.name,
-                    courseCode=courseCode,
-                    utorid=student.utorid,
-                    groupNumber=groupID,
-                    courseid=courseID,
-                    factorWithoutSelf=factorwo,
-                    factorWithSelf=factorw
-                )
-                
-                # Create database instance
-                db_instance = StudentAdjustmentFactor(**data.model_dump())
-                db.add(db_instance)
-                print(f"Added {student.name} to database session")
-                
-                results.append({
-                    "student_id": student.student_id,
-                    "name": student.name,
-                    "factorWithSelf": factorw,
-                    "factorWithoutSelf": factorwo
-                })
-                
-            except Exception as e:
-                print(f"Error processing student {student.name}: {str(e)}")
-                skipped_students.append({
-                    "student_id": student.student_id,
-                    "name": student.name,
-                    "reason": str(e)
-                })
-                continue
-        
-        # Only commit if we have successful results
-        if results:
-            db.commit()
-            print("Successfully committed all changes")
-        else:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
-        
-        response = {
-            "message": f"Successfully processed {len(results)} students",
-            "results": results
-        }
-        
-        if skipped_students:
-            response["skipped_students"] = skipped_students
-            response["message"] += f", skipped {len(skipped_students)} students"
-        
-        return response
-        
-    except HTTPException as he:
-        print(f"HTTP Exception: {he.detail}")
-        db.rollback()
-        raise
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
-
-@router.post('/addData/')
-async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
-    try:
-        print(f"Processing single student data for studentID: {studentID}")
-        
-        # Check if there are any survey responses at all
-        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
-        if not survey_data:
-            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
-        
-        # Calculate factors
-        denominatorw = await get_denominator(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            includeSelf=True, 
-            db=db
-        )
-        
-        factorw = await calculateFactor(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            denominator=denominatorw,
-            includeSelf=True, 
-            db=db
-        )
-        
-        denominatorwo = await get_denominator(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            includeSelf=False, 
-            db=db
-        )
-        
-        factorwo = await calculateFactor(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            denominator=denominatorwo,
-            includeSelf=False, 
-            db=db
-        )
-        
-        # Check if we got valid factors
-        if factorwo is None or factorw is None:
-            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
-        
-        # Get student info
-        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
-        if not student_row:
-            raise HTTPException(status_code=404, detail="Student not found")
-        
-        # Create data model
-        data: StudentAdjFactor = StudentAdjFactor(
-            name=student_row.name,
-            courseCode=courseCode,
-            utorid=student_row.utorid,
-            groupNumber=groupID,
-            courseid=courseID,
-            factorWithoutSelf=factorwo,
-            factorWithSelf=factorw
-        )
-        
-        # Save to database
-        db_instance = StudentAdjustmentFactor(**data.model_dump())
-        db.add(db_instance)
-        db.commit()
-        db.refresh(db_instance)
-        
-        return {
-            "message": "Factor added to database successfully",
-            "data": {
-                "student_id": studentID,
-                "name": student_row.name,
-                "factorWithSelf": factorw,
-                "factorWithoutSelf": factorwo
-            }
-        }
-        
-    except HTTPException as he:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
-</file>
-
-<file path="backend/routers/test.py">
-from fastapi import APIRouter, Depends
-from dependencies.auth import validate_token
-
-router = APIRouter()
-
-@router.get("/protected-route")
-async def protected_route(user: dict = Depends(validate_token)):
-    return {
-        "message": "Authenticated!",
-        "user_info": {
-            "sub": user.get("sub"),
-            "email": user.get("email")
-        }
-    }
-</file>
-
-<file path="backend/schemas.py">
-from pydantic import BaseModel
-
-class StudentCreate(BaseModel):
-    name: str
-    email: str
-    id: int
-</file>
-
-<file path="backend/utils.py">
-from typing import Optional
-
-import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import SecurityScopes, HTTPAuthorizationCredentials, HTTPBearer
-
-from application.config import get_settings
-
-
-class UnauthorizedException(HTTPException):
-    def __init__(self, detail: str, **kwargs):
-        """Returns HTTP 403"""
-        super().__init__(status.HTTP_403_FORBIDDEN, detail=detail)
-
-
-class UnauthenticatedException(HTTPException):
-    def __init__(self):
-        super().__init__(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Requires authentication"
-        )
-
-
-class VerifyToken:
-    """Does all the token verification using PyJWT"""
-
-    def __init__(self):
-        self.config = get_settings()
-
-        # This gets the JWKS from a given URL and does processing so you can
-        # use any of the keys available
-        jwks_url = f'https://{self.config.auth0_domain}/.well-known/jwks.json'
-        self.jwks_client = jwt.PyJWKClient(jwks_url)
-
-    async def verify(self,
-                     security_scopes: SecurityScopes,
-                     token: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer())
-                     ):
-        if token is None:
-            raise UnauthenticatedException
-
-        # This gets the 'kid' from the passed token
-        try:
-            signing_key = self.jwks_client.get_signing_key_from_jwt(
-                token.credentials
-            ).key
-        except jwt.exceptions.PyJWKClientError as error:
-            raise UnauthorizedException(str(error))
-        except jwt.exceptions.DecodeError as error:
-            raise UnauthorizedException(str(error))
-
-        try:
-            payload = jwt.decode(
-                token.credentials,
-                signing_key,
-                algorithms=self.config.auth0_algorithms,
-                audience=self.config.auth0_api_audience,
-                issuer=self.config.auth0_issuer,
-            )
-        except Exception as error:
-            raise UnauthorizedException(str(error))
-
-        if len(security_scopes.scopes) > 0:
-            self._check_claims(payload, 'scope', security_scopes.scopes)
-
-        return payload
-
-    def _check_claims(self, payload, claim_name, expected_value):
-        if claim_name not in payload:
-            raise UnauthorizedException(detail=f'No claim "{claim_name}" found in token')
-
-        payload_claim = payload[claim_name]
-
-        if claim_name == 'scope':
-            payload_claim = payload[claim_name].split(' ')
-
-        for value in expected_value:
-            if value not in payload_claim:
-                raise UnauthorizedException(detail=f'Missing "{claim_name}" scope')
-</file>
-
-<file path="frontend/.gitignore">
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-</file>
-
-<file path="frontend/components.json">
-{
-  "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "new-york",
-  "rsc": true,
-  "tsx": true,
-  "tailwind": {
-    "config": "",
-    "css": "src/app/globals.css",
-    "baseColor": "neutral",
-    "cssVariables": true,
-    "prefix": ""
-  },
-  "aliases": {
-    "components": "@/components",
-    "utils": "@/lib/utils",
-    "ui": "@/components/ui",
-    "lib": "@/lib",
-    "hooks": "@/hooks"
-  },
-  "iconLibrary": "lucide"
-}
-</file>
-
-<file path="frontend/postcss.config.mjs">
-const config = {
-  plugins: ["@tailwindcss/postcss"],
-};
-
-export default config;
-</file>
-
-<file path="frontend/public/file.svg">
-<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
-</file>
-
-<file path="frontend/public/globe.svg">
-<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
-</file>
-
-<file path="frontend/public/next.svg">
-<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
-</file>
-
-<file path="frontend/public/vercel.svg">
-<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
-</file>
-
-<file path="frontend/public/window.svg">
-<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
-</file>
-
-<file path="frontend/README.md">
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
-
-## Getting Started
-
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-</file>
-
-<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
-
-import { useUser } from "@/providers/user-provider";
-import { useRouter, usePathname  } from 'next/navigation'
-import { Group } from "next/dist/shared/lib/router/utils/route-regex";
-
-
-interface StudentData{
-    email: string;
-    id: number;
-    student_id: number;
-    firstname: string;
-    utorid: number;
-    name: string;
-    lastname: string;
-}
-
-interface Props{
-  groupID: number;
-}
-
-
-const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
-    const url: URL = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/groups");
-    url.searchParams.append('groupID', groupID.toString());
-
-    const response = await fetch(url, {
-        method: "GET",
-    });
-    const data: StudentData[] = await response.json();
-    return data;
-}
-
-const GroupStudentClient = ({ groupID } : Props) => {
-    const { user } = useUser();
-    const [students, setStudents] = useState<StudentData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const pathname = usePathname();
-
-    const router = useRouter();
-
-    useEffect(() => {
-        if (!user?.id) return;
-        const lecturerId = user.id;
-        const loadData = async () => {
-            try {
-                if (!user){
-                    throw new Error("Uh Oh");
-                }
-                
-                const studentdata: StudentData[] = await fetchGroups(groupID); 
-                setStudents(studentdata);
-                
-                
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load students in group");
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        loadData();
-    }, [user?.id]);
-
-    if (loading) return <div>Loading students in group...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {students.length > 0 ? (
-                students.map((student) => (
-                    
-                    
-                        <Card key={`${student.id}`} className="hover:shadow-lg transition-shadow">
-                        
-                        <CardHeader>
-                            <CardTitle>{student.name}</CardTitle>
-                            <CardDescription>Group: {groupID}</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                {student.email}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>{student.utorid}</p>
-                        </CardFooter>
-                        
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No groups found for this course, ID = {groupID}</div>
-            )}
-        </div>
-    );
-    
-    
-
-}
-
-export default GroupStudentClient;
-</file>
-
 <file path="frontend/src/app/instructor/course/[courseID]/columns.tsx">
 "use client"
 
@@ -6333,54 +6212,6 @@ export const columns: ColumnDef<StudentData>[] = [
     header: "Last Name",
   },
 ]
-</file>
-
-<file path="frontend/src/app/instructor/course/[courseID]/CoursePageClient.tsx">
-'use client';
-
-import { useState, useEffect } from "react";
-import { columns, StudentData } from "./columns";
-import { DataTable } from "./studentTable";
-
-interface Props {
-  courseId: number;
-}
-
-const CoursePageClient =  ({ courseId }: Props) => {
-  const [studentsInCourse, setStudentsInCourse] = useState<StudentData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  //Get group number of student in student_group with group_id == groups
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/students?courseID=${courseId}`);
-        if (!response.ok) throw new Error("Failed to fetch students");
-        const data = await response.json();
-
-
-        setStudentsInCourse(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, [courseId]);
-
-  if (loading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error}</p>;
-
-  return (
-    <div className="container mx-auto py-10">
-      <DataTable columns={columns} data={studentsInCourse} />
-    </div>
-  );
-};
-
-export default CoursePageClient;
 </file>
 
 <file path="frontend/src/app/instructor/course/[courseID]/studentTable.tsx">
@@ -8705,7 +8536,7 @@ export default AuthRedirect;
 }
 </file>
 
-<file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
+<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx">
 "use client";
 import { useState, useEffect } from "react";
 import {
@@ -8717,90 +8548,161 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { useAuth0 } from "@auth0/auth0-react";
+
 import { useUser } from "@/providers/user-provider";
-import { useRouter, usePathname } from 'next/navigation'
-import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
+import { useRouter, usePathname  } from 'next/navigation'
+import { Group } from "next/dist/shared/lib/router/utils/route-regex";
 
-interface GroupData {
-  courseCode: string;
-  courseID: string;  // Consider renaming to courseId for consistency
-  groupNumber: number;
-  id: number;
+
+interface StudentData{
+    email: string;
+    id: number;
+    student_id: number;
+    firstname: string;
+    utorid: number;
+    name: string;
+    lastname: string;
 }
 
-type GroupsProps = {
+interface Props{
+  groupID: number;
+}
+
+
+const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
+    const url: URL = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/groups");
+    url.searchParams.append('groupID', groupID.toString());
+
+    const response = await fetch(url, {
+        method: "GET",
+    });
+    const data: StudentData[] = await response.json();
+    return data;
+}
+
+const GroupStudentClient = ({ groupID } : Props) => {
+    const { user } = useUser();
+    const [students, setStudents] = useState<StudentData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const pathname = usePathname();
+
+    const router = useRouter();
+
+    useEffect(() => {
+        if (!user?.id) return;
+        const lecturerId = user.id;
+        const loadData = async () => {
+            try {
+                if (!user){
+                    throw new Error("Uh Oh");
+                }
+                
+                const studentdata: StudentData[] = await fetchGroups(groupID); 
+                setStudents(studentdata);
+                
+                
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load students in group");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, [user?.id]);
+
+    if (loading) return <div>Loading students in group...</div>;
+    if (error) return <div>Error: {error}</div>;
+
+
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {students.length > 0 ? (
+                students.map((student) => (
+                    
+                    
+                        <Card key={`${student.id}`} className="hover:shadow-lg transition-shadow">
+                        
+                        <CardHeader>
+                            <CardTitle>{student.name}</CardTitle>
+                            <CardDescription>Group: {groupID}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                {student.email}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>{student.utorid}</p>
+                        </CardFooter>
+                        
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No groups found for this course, ID = {groupID}</div>
+            )}
+        </div>
+    );
+    
+    
+
+}
+
+export default GroupStudentClient;
+</file>
+
+<file path="frontend/src/app/instructor/course/[courseID]/CoursePageClient.tsx">
+'use client';
+
+import { useState, useEffect } from "react";
+import { columns, StudentData } from "./columns";
+import { DataTable } from "./studentTable";
+
+interface Props {
   courseId: number;
-};
-
-const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
-  const url = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/getgroups");
-  url.searchParams.append('courseID', courseID.toString());
-  
-  const response = await fetch(url, { method: "GET" });
-  return await response.json();
 }
 
-const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
-  const { user } = useUser();
-  const [groups, setGroups] = useState<GroupData[]>([]);
+const CoursePageClient =  ({ courseId }: Props) => {
+  const [studentsInCourse, setStudentsInCourse] = useState<StudentData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const router: AppRouterInstance = useRouter();
-  const pathname: string = usePathname();
-
+  //Get group number of student in student_group with group_id == groups
   useEffect(() => {
-    if (!user?.id) return;
-    
     const loadData = async () => {
       try {
-        const groupdata = await fetchGroups(courseId);
-        setGroups(groupdata);
+        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/students?courseID=${courseId}`);
+        if (!response.ok) throw new Error("Failed to fetch students");
+        const data = await response.json();
+
+
+        setStudentsInCourse(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load groups");
+        setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
         setLoading(false);
       }
     };
 
     loadData();
-  }, [user?.id, courseId]);  // Added courseId to dependencies
+  }, [courseId]);
 
-  if (loading) return <div>Loading groups...</div>;
-  if (error) return <div>Error: {error}</div>;
+  if (loading) return <p>Loading...</p>;
+  if (error) return <p>Error: {error}</p>;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-      {groups.length > 0 ? (
-        groups.map((group) => (
-          <Card key={group.id} className="hover:shadow-lg transition-shadow">
-            <button 
-              type="button" 
-              onClick={() => router.push(`${pathname}/${group.id}`)}
-              className="w-full text-left"
-            >
-              <CardHeader>
-                <CardTitle>{group.courseCode}</CardTitle>
-                <CardDescription>Group: {group.groupNumber}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p>Course ID: {group.courseID}</p>
-              </CardContent>
-              <CardFooter>
-                <p>Group ID: {group.id}</p>
-              </CardFooter>
-            </button>
-          </Card>
-        ))
-      ) : (
-        <div className="text-gray-500">
-          No groups found for course ID: {courseId}
-        </div>
-      )}
+    <div className="container mx-auto py-10">
+      <DataTable columns={columns} data={studentsInCourse} />
     </div>
   );
-}
+};
 
-export default Groups;
+export default CoursePageClient;
 </file>
 
 <file path="frontend/src/app/instructor/course/page.tsx">
@@ -9130,48 +9032,6 @@ const ExportCSV = ({ courseID }: Props) => {
 export default ExportCSV;
 </file>
 
-<file path="frontend/src/providers/user-sync.tsx">
-// src/providers/user-sync.tsx
-'use client';
-import { useAuth0 } from '@auth0/auth0-react';
-import { useEffect } from 'react';
-
-export default function UserSync({ children }: { children: React.ReactNode }) {
-  const { user, isAuthenticated, getAccessTokenSilently } = useAuth0();
-
-  // Sync user with FastAPI backend
-  useEffect(() => {
-    const syncUser = async () => {
-      if (!isAuthenticated || !user) return;
-      
-      try {
-        const token = await getAccessTokenSilently();
-        
-        await fetch(`${process.env.REACT_APP_API_URL}/users`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            sub: user.sub,
-            email: user.email,
-            name: user.name,
-            // Add any additional claims
-          })
-        });
-      } catch (error) {
-        console.error('User sync failed:', error);
-      }
-    };
-
-    syncUser();
-  }, [isAuthenticated, user, getAccessTokenSilently]);
-
-  return <>{children}</>;
-}
-</file>
-
 <file path="backend/create_tables.py">
 from models import Base, engine, StudentCourse, Group
 
@@ -9402,7 +9262,7 @@ async def getStudentID(email: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.email == email).first()
     return student.id
 
-@router.post("")
+@router.post("/")
 async def create_user(payload: dict = Body(...), db: Session = Depends(get_db)):
     auth0_id = payload["sub"]
     
@@ -9465,6 +9325,104 @@ AxiosClient.interceptors.request.use(
 );
 
 export default AxiosClient;
+</file>
+
+<file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { useAuth0 } from "@auth0/auth0-react";
+import { useUser } from "@/providers/user-provider";
+import { useRouter, usePathname } from 'next/navigation'
+import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
+
+interface GroupData {
+  courseCode: string;
+  courseID: string;  // Consider renaming to courseId for consistency
+  groupNumber: number;
+  id: number;
+}
+
+type GroupsProps = {
+  courseId: number;
+};
+
+const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
+  const url = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/getgroups");
+  url.searchParams.append('courseID', courseID.toString());
+  
+  const response = await fetch(url, { method: "GET" });
+  return await response.json();
+}
+
+const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
+  const { user } = useUser();
+  const [groups, setGroups] = useState<GroupData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const router: AppRouterInstance = useRouter();
+  const pathname: string = usePathname();
+
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    const loadData = async () => {
+      try {
+        const groupdata = await fetchGroups(courseId);
+        setGroups(groupdata);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load groups");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [user?.id, courseId]);  // Added courseId to dependencies
+
+  if (loading) return <div>Loading groups...</div>;
+  if (error) return <div>Error: {error}</div>;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+      {groups.length > 0 ? (
+        groups.map((group) => (
+          <Card key={group.id} className="hover:shadow-lg transition-shadow">
+            <button 
+              type="button" 
+              onClick={() => router.push(`${pathname}/${group.id}`)}
+              className="w-full text-left"
+            >
+              <CardHeader>
+                <CardTitle>{group.courseCode}</CardTitle>
+                <CardDescription>Group: {group.groupNumber}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p>Course ID: {group.courseID}</p>
+              </CardContent>
+              <CardFooter>
+                <p>Group ID: {group.id}</p>
+              </CardFooter>
+            </button>
+          </Card>
+        ))
+      ) : (
+        <div className="text-gray-500">
+          No groups found for course ID: {courseId}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default Groups;
 </file>
 
 <file path="frontend/src/app/instructor/course/[courseID]/page.tsx">
@@ -10275,6 +10233,48 @@ const FactorTable = (params: Props) => {
 }
 
 export default FactorTable;
+</file>
+
+<file path="frontend/src/providers/user-sync.tsx">
+// src/providers/user-sync.tsx
+'use client';
+import { useAuth0 } from '@auth0/auth0-react';
+import { useEffect } from 'react';
+
+export default function UserSync({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated, getAccessTokenSilently } = useAuth0();
+
+  // Sync user with FastAPI backend
+  useEffect(() => {
+    const syncUser = async () => {
+      if (!isAuthenticated || !user) return;
+      
+      try {
+        const token = await getAccessTokenSilently();
+        
+        await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            sub: user.sub,
+            email: user.email,
+            name: user.name,
+            // Add any additional claims
+          })
+        });
+      } catch (error) {
+        console.error('User sync failed:', error);
+      }
+    };
+
+    syncUser();
+  }, [isAuthenticated, user, getAccessTokenSilently]);
+
+  return <>{children}</>;
+}
 </file>
 
 <file path="frontend/src/app/page.tsx">

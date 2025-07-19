@@ -23,7 +23,7 @@ interface CourseData{
 
 
 const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
-    const response = await fetch(`${process.env.REACT_APP_API_URL}/api/courses`, {
+    const response = await fetch("https://peer-backend-1014214808131.us-central1.run.app/api/courses", {
         method: "GET",
         headers: {
             'instructorID': lecturer_id.toString()
