@@ -31,7 +31,7 @@ interface Props{
 
 
 const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
-    const url: URL = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/groups");
+    const url: URL = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/groups/");
     url.searchParams.append('groupID', groupID.toString());
 
     const response = await fetch(url, {
