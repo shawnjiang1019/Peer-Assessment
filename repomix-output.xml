@@ -111,6 +111,7 @@ frontend/src/components/auth-buttons.tsx
 frontend/src/components/file-drop.tsx
 frontend/src/components/loginbutton.tsx
 frontend/src/components/logoutbutton.tsx
+frontend/src/components/refreshbutton.tsx
 frontend/src/components/TableSurvey.tsx
 frontend/src/components/ui/AFTable.tsx
 frontend/src/components/ui/button.tsx
@@ -140,6 +141,27 @@ thing.py
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="frontend/src/components/refreshbutton.tsx">
+import React from "react";
+import { instructorService } from "@/app/instructor/instructorlogic";
+type RefreshButtonProps = {
+  courseID: number;
+};
+
+function RefreshButton({ courseID }: RefreshButtonProps) {
+  return (
+    <button
+      className="bg-blue-500 text-white px-6 py-3 rounded-lg text-lg hover:bg-blue-600"
+      onClick={() => instructorService.refreshStudentFactors(courseID)}
+    >
+      Refresh Factors
+    </button>
+  );
+}
+
+export default RefreshButton;
+</file>
 
 <file path=".gitattributes">
 # Auto detect text files and perform LF normalization
@@ -636,7 +658,7 @@ async def getStudents(groupID: int, db: Session = Depends(get_db)):
 <file path="backend/routers/factor.py">
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor, FinishedSurvey
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -738,6 +760,47 @@ async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
     
     # Don't raise exception for empty results - let caller handle it
     return instances
+@router.post("/refreshFactors")
+async def refreshFactors(courseID: int, db: Session = Depends(get_db)):
+    try:
+        groups: List[Group] = db.query(Group).filter(Group.courseID == courseID).all()
+        finished: List[FinishedSurvey] = db.query(FinishedSurvey).all()
+        finishedGroups = [f.groupID for f in finished]
+        
+        processed_groups = []
+        
+        for group in groups:
+            if group.id not in finishedGroups:
+                # Mark group as finished first
+                finished_survey = FinishedSurvey(groupID=group.id)
+                db.add(finished_survey)
+                
+                # Process the group
+                result = await addMultiple(
+                    groupID=group.id, 
+                    courseID=courseID, 
+                    courseCode="STAC67", 
+                    db=db
+                )
+                processed_groups.append({
+                    "groupID": group.id,
+                    "result": result
+                })
+        
+        if processed_groups:
+            db.commit()
+            return {
+                "message": f"Successfully processed {len(processed_groups)} groups",
+                "processed_groups": processed_groups
+            }
+        else:
+            return {
+                "message": "No unfinished groups found to process"
+            }
+            
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error refreshing factors: {str(e)}")
 
 
 async def getStudentsInGroup(groupID: int, db: Session):
@@ -6446,11 +6509,11 @@ const FileDrop = () => {
         data.append('file', selectedFile);
 
         try {
-            const response = await fetch('http://127.0.0.1:8080/api/csv', {
+            const response = await fetch('https://peer-backend-1014214808131.us-central1.run.app/api/csv', {
                 method: 'POST',
                 body: data,
                 headers: {
-                    "cid": "CSCC01",
+                    "cid": "STAC67",
 
                     // "Content-Type" is automatically set by browser for FormData
                 }
@@ -8327,7 +8390,7 @@ interface User {
 export class AuthService{
     async getUserRole(sub: string): Promise<string | null>{
         
-        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users/by-auth0/${sub}`);
+        const response = await fetch(`http://127.0.0.1:8080/users/by-auth0/${sub}`);
         const result: User = await response.json();
 
         return result.role;
@@ -8570,7 +8633,7 @@ interface Props{
 
 
 const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
-    const url: URL = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/groups");
+    const url: URL = new URL("http://127.0.0.1:8080/group/groups");
     url.searchParams.append('groupID', groupID.toString());
 
     const response = await fetch(url, {
@@ -8657,54 +8720,6 @@ const GroupStudentClient = ({ groupID } : Props) => {
 export default GroupStudentClient;
 </file>
 
-<file path="frontend/src/app/instructor/course/[courseID]/CoursePageClient.tsx">
-'use client';
-
-import { useState, useEffect } from "react";
-import { columns, StudentData } from "./columns";
-import { DataTable } from "./studentTable";
-
-interface Props {
-  courseId: number;
-}
-
-const CoursePageClient =  ({ courseId }: Props) => {
-  const [studentsInCourse, setStudentsInCourse] = useState<StudentData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  //Get group number of student in student_group with group_id == groups
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/students?courseID=${courseId}`);
-        if (!response.ok) throw new Error("Failed to fetch students");
-        const data = await response.json();
-
-
-        setStudentsInCourse(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, [courseId]);
-
-  if (loading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error}</p>;
-
-  return (
-    <div className="container mx-auto py-10">
-      <DataTable columns={columns} data={studentsInCourse} />
-    </div>
-  );
-};
-
-export default CoursePageClient;
-</file>
-
 <file path="frontend/src/app/instructor/course/page.tsx">
 'use client'
 
@@ -8746,7 +8761,17 @@ export class InstructorService{
             return null;
         }
     }
-
+    async refreshStudentFactors(courseID: number){
+        try{
+            const response = await AxiosClient.post("/factor/refreshFactors", {
+                courseID: courseID    
+            });
+            return response.data;
+        } catch(error){
+            console.error('Could not refresh the factors for groups in the course', error);
+            return null;
+        }
+    }
 
     async getStudentFactors(courseID: number){
         try{
@@ -9262,7 +9287,7 @@ async def getStudentID(email: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.email == email).first()
     return student.id
 
-@router.post("/")
+@router.post("")
 async def create_user(payload: dict = Body(...), db: Session = Depends(get_db)):
     auth0_id = payload["sub"]
     
@@ -9303,7 +9328,7 @@ import { env } from "process";
 
 
 const AxiosClient = axios.create({
-  baseURL: "https://peer-backend-1014214808131.us-central1.run.app", // Your API base URL
+  baseURL: "http://127.0.0.1:8080", // Your API base URL
   timeout: 10000, // Optional: set timeout
 });
 
@@ -9325,6 +9350,54 @@ AxiosClient.interceptors.request.use(
 );
 
 export default AxiosClient;
+</file>
+
+<file path="frontend/src/app/instructor/course/[courseID]/CoursePageClient.tsx">
+'use client';
+
+import { useState, useEffect } from "react";
+import { columns, StudentData } from "./columns";
+import { DataTable } from "./studentTable";
+
+interface Props {
+  courseId: number;
+}
+
+const CoursePageClient =  ({ courseId }: Props) => {
+  const [studentsInCourse, setStudentsInCourse] = useState<StudentData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  //Get group number of student in student_group with group_id == groups
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8080/course/students?courseID=${courseId}`);
+        if (!response.ok) throw new Error("Failed to fetch students");
+        const data = await response.json();
+
+
+        setStudentsInCourse(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [courseId]);
+
+  if (loading) return <p>Loading...</p>;
+  if (error) return <p>Course Error: {error}</p>;
+
+  return (
+    <div className="container mx-auto py-10">
+      <DataTable columns={columns} data={studentsInCourse} />
+    </div>
+  );
+};
+
+export default CoursePageClient;
 </file>
 
 <file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
@@ -9355,7 +9428,7 @@ type GroupsProps = {
 };
 
 const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
-  const url = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/getgroups");
+  const url = new URL("http://127.0.0.1:8080/group/getgroups");
   url.searchParams.append('courseID', courseID.toString());
   
   const response = await fetch(url, { method: "GET" });
@@ -9371,7 +9444,7 @@ const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
   const pathname: string = usePathname();
 
   useEffect(() => {
-    if (!user?.id) return;
+    //if (!user?.id) return;
     
     const loadData = async () => {
       try {
@@ -9429,11 +9502,12 @@ export default Groups;
 import Dashboard from '@/components/ui/Dashboard';
 import CoursePageClient from './CoursePageClient';
 import Groups from './GroupClient';
+import RefreshButton from '@/components/refreshbutton';
 
 interface CoursePageProps {
-  params: Promise<{
+  params: {
     courseID: string;
-  }>;
+  };
 }
 
 const CoursePage = async ({ params }: CoursePageProps) => {
@@ -9453,120 +9527,6 @@ const CoursePage = async ({ params }: CoursePageProps) => {
 };
 
 export default CoursePage;
-</file>
-
-<file path="frontend/src/app/instructor/page.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
-
-import { useUser } from "@/providers/user-provider";
-import { useRouter } from 'next/navigation'
-
-
-interface CourseData{
-    code: string;
-    session: string;
-    lecturer_id: number;
-    id: number;
-}
-
-
-const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
-    const response = await fetch(`${process.env.REACT_APP_API_URL}/api/courses`, {
-        method: "GET",
-        headers: {
-            'instructorID': lecturer_id.toString()
-        }
-    });
-    const data = await response.json();
-    console.log(data);
-    return data;
-}
-
-const Instructor = () => {
-    const { user } = useUser();
-    const [courses, setCourses] = useState<CourseData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    
-
-
-    const router = useRouter();
-
-    useEffect(() => {
-        if (!user?.id) return;
-        const lecturerId = user.id;
-        const loadData = async () => {
-            try {
-                if (!user){
-                    throw new Error("Uh Oh");
-                }
-                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
-                setCourses(coursedata);
-                
-                
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load courses");
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        loadData();
-    }, [user?.id]);
-
-    if (loading) return <div>Loading courses...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {courses.length > 0 ? (
-                courses.map((course) => (
-                    
-                    
-                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
-                        <CardHeader>
-                            <CardTitle>{course.code}</CardTitle>
-                            <CardDescription>{course.session} Session</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                Lecturer ID: {course.lecturer_id}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>{course.code}</p>
-                        </CardFooter>
-                        </button>
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
-            )}
-        </div>
-    );
-    
-    
-
-}
-
-export default Instructor;
 </file>
 
 <file path="frontend/src/app/layout.tsx">
@@ -9651,6 +9611,7 @@ export class StudentService{
 
     async getStudentsInGroup(groupID: number){
         try {
+            
             const response = await AxiosClient.get('group/groups/', {
                 params: { groupID: groupID }
             });
@@ -9663,11 +9624,23 @@ export class StudentService{
 
     async getStudentID(email: string){
         try {
-            const response = await AxiosClient.get('users/studentid/' , {
+            console.log("email: ", email);
+            const response = await AxiosClient.get('/users/studentid', {
                 params: { email: email }
             });
-            return response.data
+            return response.data;
         } catch(error){
+            // Type guard to safely access error properties
+            if (error instanceof Error) {
+                console.error('Error message:', error.message);
+            }
+            
+            // For axios errors specifically
+            if (error && typeof error === 'object' && 'response' in error) {
+                const axiosError = error as any; // or import AxiosError type
+                console.error('Axios error:', axiosError.response?.status, axiosError.response?.data);
+            }
+            
             console.error('Could not get the student ID from the specified email', error);
             return null;
         }
@@ -9675,9 +9648,32 @@ export class StudentService{
 
     async postSurveyInstance(payload: SurveyInstance){
         try {
-            const response = await AxiosClient.post('group/postsurvey/', payload);
+            console.log('Posting survey payload:', payload);
+            console.log('Request URL:', 'group/postsurvey');
+            
+            const response = await AxiosClient.post('group/postsurvey', payload);
+            console.log('Survey post successful:', response.data);
             return response.data;
         } catch(error){
+            // Enhanced error logging like your getStudentID method
+            if (error instanceof Error) {
+                console.error('Error message:', error.message);
+            }
+            
+            if (error && typeof error === 'object' && 'response' in error) {
+                const axiosError = error as any;
+                console.error('Axios error details:', {
+                    status: axiosError.response?.status,
+                    statusText: axiosError.response?.statusText,
+                    data: axiosError.response?.data,
+                    url: axiosError.config?.url,
+                    method: axiosError.config?.method,
+                    payload: axiosError.config?.data
+                });
+            } else if (error && typeof error === 'object' && 'request' in error) {
+                console.error('Network error - no response received:', error);
+            }
+            
             console.error('Error posting survey:', error);
             throw error;
         }
@@ -10084,6 +10080,7 @@ import { useUser } from "@/providers/user-provider";
 import { Student } from "@/app/student/studentlogic";
 import Factortable from "./FactorTable";
 import ExportCSV from "./ExportCSV";
+import RefreshButton from "../refreshbutton";
 
 // "student_id": 1004985643,
 //             "name": "Yuening Chen",
@@ -10133,6 +10130,7 @@ const Dashboard = (params: DashboardProps) => {
     return(
         <div>
             <ExportCSV courseID={params.courseID}/>
+            <RefreshButton courseID={params.courseID}/>
             <Factortable data={studentFactors}/>
 
         </div>
@@ -10235,46 +10233,119 @@ const FactorTable = (params: Props) => {
 export default FactorTable;
 </file>
 
-<file path="frontend/src/providers/user-sync.tsx">
-// src/providers/user-sync.tsx
-'use client';
-import { useAuth0 } from '@auth0/auth0-react';
-import { useEffect } from 'react';
+<file path="frontend/src/app/instructor/page.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { useAuth0 } from "@auth0/auth0-react";
 
-export default function UserSync({ children }: { children: React.ReactNode }) {
-  const { user, isAuthenticated, getAccessTokenSilently } = useAuth0();
+import { useUser } from "@/providers/user-provider";
+import { useRouter } from 'next/navigation'
+import RefreshButton from "@/components/refreshbutton";
 
-  // Sync user with FastAPI backend
-  useEffect(() => {
-    const syncUser = async () => {
-      if (!isAuthenticated || !user) return;
-      
-      try {
-        const token = await getAccessTokenSilently();
-        
-        await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            sub: user.sub,
-            email: user.email,
-            name: user.name,
-            // Add any additional claims
-          })
-        });
-      } catch (error) {
-        console.error('User sync failed:', error);
-      }
-    };
 
-    syncUser();
-  }, [isAuthenticated, user, getAccessTokenSilently]);
-
-  return <>{children}</>;
+interface CourseData{
+    code: string;
+    session: string;
+    lecturer_id: number;
+    id: number;
 }
+
+
+const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
+    const response = await fetch("http://127.0.0.1:8080/api/courses", {
+        method: "GET",
+        headers: {
+            'instructorID': lecturer_id.toString()
+        }
+    });
+    const data = await response.json();
+    console.log(data);
+    return data;
+}
+
+const Instructor = () => {
+    const { user } = useUser();
+    const [courses, setCourses] = useState<CourseData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    
+
+
+    const router = useRouter();
+
+    useEffect(() => {
+        if (!user?.id) return;
+        const lecturerId = user.id;
+        const loadData = async () => {
+            try {
+                if (!user){
+                    throw new Error("Uh Oh");
+                }
+                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
+                setCourses(coursedata);
+                
+                
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load courses");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, [user?.id]);
+
+    if (loading) return <div>Loading courses...</div>;
+    if (error) return <div>Error: {error}</div>;
+
+
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {courses.length > 0 ? (
+                courses.map((course) => (
+                    
+                    
+                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
+                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
+                        <CardHeader>
+                            <CardTitle>{course.code}</CardTitle>
+                            <CardDescription>{course.session} Session</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                Lecturer ID: {course.lecturer_id}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>{course.code}</p>
+                        </CardFooter>
+                        </button>
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
+            )}
+        </div>
+    );
+    
+    
+
+}
+
+export default Instructor;
 </file>
 
 <file path="frontend/src/app/page.tsx">
@@ -10305,135 +10376,46 @@ export default function Home() {
 }
 </file>
 
-<file path="frontend/src/providers/user-provider.tsx">
-import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { useAuth0 } from "@auth0/auth0-react";
+<file path="frontend/src/providers/user-sync.tsx">
+// src/providers/user-sync.tsx
+'use client';
+import { useAuth0 } from '@auth0/auth0-react';
+import { useEffect } from 'react';
 
-interface User {
-  id: number;
-  name: string;
-  email: string;
-  auth0_id?: string;
-  role: string;
-}
+export default function UserSync({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated, getAccessTokenSilently } = useAuth0();
 
-interface UserContextType {
-  user: User | null;
-  loading: boolean;
-  error: string | null;
-}
-
-const UserContext = createContext<UserContextType>({
-  user: null,
-  loading: true,
-  error: null,
-});
-
-export const UserProvider = ({ children }: { children: ReactNode }) => {
-  const { user: auth0User, isAuthenticated, getAccessTokenSilently } = useAuth0();
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
+  // Sync user with FastAPI backend
   useEffect(() => {
-    const syncAndLoadUser = async () => {
-      console.log("Starting user sync process...");
-      console.log(`Auth0 auth status: ${isAuthenticated}`);
-      console.log(`Auth0 user:`, auth0User);
+    const syncUser = async () => {
+      if (!isAuthenticated || !user) return;
       
-      if (!isAuthenticated || !auth0User) {
-        console.log("User not authenticated, skipping sync");
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-
       try {
-        console.log("Getting access token...");
         const token = await getAccessTokenSilently();
-        console.log("Access token received");
-
-        // 1. Sync user info to backend
-        console.log("Syncing user with backend...");
-        const syncPayload = {
-          sub: auth0User.sub,
-          email: auth0User.email,
-          name: auth0User.name || "", // Handle potential undefined name
-        };
         
-        console.log("Sync payload:", syncPayload);
-        const syncResponse = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/users`, {
+        await fetch("http://127.0.0.1:8080/users", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
+            'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify(syncPayload),
+          body: JSON.stringify({
+            sub: user.sub,
+            email: user.email,
+            name: user.name,
+            // Add any additional claims
+          })
         });
-
-        console.log("Sync response status:", syncResponse.status);
-        
-        if (!syncResponse.ok) {
-          const errorText = await syncResponse.text();
-          console.error("Sync error response:", errorText);
-          throw new Error(`Failed to sync user: ${syncResponse.status} - ${errorText}`);
-        }
-
-        const syncData = await syncResponse.json();
-        console.log("Sync successful, user data:", syncData);
-
-        // 2. Fetch full user profile from backend
-        console.log(`Fetching user profile for auth0 ID: ${auth0User.sub}`);
-        const profileResponse = await fetch(
-          `https://peer-backend-1014214808131.us-central1.run.app/users/by-auth0/${auth0User.sub}`, //here
-          {
-            headers: { Authorization: `Bearer ${token}` }
-          }
-        );
-
-        console.log("Profile response status:", profileResponse.status);
-        
-        if (!profileResponse.ok) {
-          const errorText = await profileResponse.text();
-          console.error("Profile error response:", errorText);
-          throw new Error(`Failed to fetch user profile: ${profileResponse.status} - ${errorText}`);
-        }
-
-        const userData = await profileResponse.json();
-        console.log("User profile data:", userData);
-        
-        // Verify we have an ID
-        if (!userData.id) {
-          console.error("User ID is missing in response:", userData);
-          throw new Error("User ID is missing in backend response");
-        }
-
-        setUser({
-          id: userData.id,
-          name: userData.name,
-          email: userData.email,
-          auth0_id: userData.auth0_sub || auth0User.sub,
-          role: userData.role || 'student'
-        });
-      } catch (err) {
-        console.error("User sync error:", err);
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
+      } catch (error) {
+        console.error('User sync failed:', error);
       }
     };
 
-    syncAndLoadUser();
-  }, [isAuthenticated, auth0User, getAccessTokenSilently]);
+    syncUser();
+  }, [isAuthenticated, user, getAccessTokenSilently]);
 
-  return (
-    <UserContext.Provider value={{ user, loading, error }}>
-      {children}
-    </UserContext.Provider>
-  );
-};
-
-export const useUser = () => useContext(UserContext);
+  return <>{children}</>;
+}
 </file>
 
 <file path="backend/.env">
@@ -10507,9 +10489,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import { group } from "console";
+import { useUser } from "@/providers/user-provider";
 
 const Student = () => {
   const { user, isAuthenticated, isLoading } = useAuth0();
+  const user1 = useUser();
   const router = useRouter();
   const [ studentServiceInstance ] = useState(() => new StudentService());
 
@@ -10518,8 +10502,8 @@ const Student = () => {
   //get groups and set them
   useEffect(()=> {
     const fetchGroups = async () => {
-      if (isAuthenticated && user?.sub){
-        const response = await studentServiceInstance.getGroups(123456);
+      if (isAuthenticated && user?.sub && user1.user){
+        const response = await studentServiceInstance.getGroups(user1.user.id || 123456);
         
         if (response){
           setGroups(response);
@@ -10534,7 +10518,7 @@ const Student = () => {
     
     
 
-  }, [isAuthenticated, user?.sub, studentServiceInstance])
+  }, [isAuthenticated, user?.sub, studentServiceInstance, user1.user?.id])
   return (
     <div className="p-4">
       <h2 className="text-lg font-semibold mb-6">
@@ -11168,169 +11152,139 @@ async def postSurveyInstance(surveyResponse: StudentSurveyBase, db: Session = De
 }
 </file>
 
-<file path="backend/main.py">
-from fastapi import FastAPI, Security, Depends, HTTPException
-from utils import VerifyToken
-from routers.test import router as test_router
-from routers.api import router as api_router
-from routers.groups import router as group_router
-from sqlalchemy.orm import Session
-from models import SessionLocal, User, Course
-from pydantic import BaseModel
-from typing import List
-from fastapi.middleware.cors import CORSMiddleware
-from dependencies import auth
-from routers.users import router as user_router
-from routers.courses import router as course_router
-from routers.calculations import router as calc_router
-from routers.factor import router as factor_router
-import os
-#from routers.auth import router as auth_router
+<file path="frontend/src/providers/user-provider.tsx">
+import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
 
-# Creates app instance
-app = FastAPI()
-#auth = VerifyToken()
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  auth0_id?: string;
+  role: string;
+}
 
-app.include_router(api_router, prefix="/api")
-app.include_router(group_router, prefix="/group")
-app.include_router(user_router)
-app.include_router(course_router)
-app.include_router(calc_router, prefix='/calculate')
-app.include_router(factor_router, prefix='/factor')
-#app.include_router(auth_router, prefix="/auth")
+interface UserContextType {
+  user: User | null;
+  loading: boolean;
+  error: string | null;
+}
 
+const UserContext = createContext<UserContextType>({
+  user: null,
+  loading: true,
+  error: null,
+});
 
+export const UserProvider = ({ children }: { children: ReactNode }) => {
+  const { user: auth0User, isAuthenticated, getAccessTokenSilently } = useAuth0();
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-origins = [
-    "http://localhost:3000",  # frontend dev server (React, etc.)
-    "http://127.0.0.1:3000",
-    "http://localhost",       # optional
-    "http://127.0.0.1",
-    "https://peer-assessment-five.vercel.app/",
-    
-    # "https://your-production-site.com"
-]
+  useEffect(() => {
+    const syncAndLoadUser = async () => {
+      console.log("Starting user sync process...");
+      console.log(`Auth0 auth status: ${isAuthenticated}`);
+      console.log(`Auth0 user:`, auth0User);
+      
+      if (!isAuthenticated || !auth0User) {
+        console.log("User not authenticated, skipping sync");
+        setUser(null);
+        setLoading(false);
+        return;
+      }
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,              # Allows these origins
-    allow_credentials=True,
-    allow_methods=["*"],                # Allows all HTTP methods
-    allow_headers=["*"],                # Allows all headers
-)
+      try {
+        console.log("Getting access token...");
+        const token = await getAccessTokenSilently();
+        console.log("Access token received");
 
-@app.get("/")
-def root():
-    return {"message": "FastAPI is working!"}
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Pydantic model for response
-class UserResponse(BaseModel):
-    id: int
-    name: str
-    email: str
-
-    class Config:
-        orm_mode = True
-
-class CourseResponse(BaseModel):
-    code: str
-    session: str
-    lecturer_id: int
-
-    class Config:
-        orm_mode = True
-
-@app.get("/users", response_model=List[UserResponse])
-async def get_users(db: Session = Depends(get_db)):
-    users = db.query(User).all()
-    return users
-
-@app.get("/courses/{userID}", response_model=List[CourseResponse])
-async def get_courses(userID: int, db: Session = Depends(get_db)):
-    lecturer_id = userID
-    courses = db.query(Course).filter(Course.lecturer_id == lecturer_id).all()
-    return courses
-
-
-@app.get("/courses/{courseID}/{courseSession}", response_model=CourseResponse)  # Changed to single response
-def get_single_course(
-    courseID: str,
-    courseSession: str,
-    db: Session = Depends(get_db)
-):
-    # Use clearer variable names to avoid shadowing
-    course_code = courseID
-    session = add_space_manual(courseSession)
-    
-    # Get the course with eager loading if there are relationships
-    course = (
-        db.query(Course)
-        .filter(
-            Course.code == course_code,
-            Course.session == session
-        )
-        .first()
-    )
-    
-    if not course:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Course {courseID} for session {courseSession} not found"
-        )
+        // 1. Sync user info to backend
+        console.log("Syncing user with backend...");
+        const syncPayload = {
+          sub: auth0User.sub,
+          email: auth0User.email,
+          name: auth0User.name || "", // Handle potential undefined name
+        };
         
-    return course
+        console.log("Sync payload:", syncPayload);
+        const syncResponse = await fetch("http://127.0.0.1:8080/users", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify(syncPayload),
+        });
 
+        console.log("Sync response status:", syncResponse.status);
+        
+        if (!syncResponse.ok) {
+          const errorText = await syncResponse.text();
+          console.error("Sync error response:", errorText);
+          throw new Error(`Failed to sync user: ${syncResponse.status} - ${errorText}`);
+        }
 
-@app.get("/api/public")
-def public():
-    """No access token required to access this route"""
+        const syncData = await syncResponse.json();
+        console.log("Sync successful, user data:", syncData);
 
-    result = {
-        "status": "success",
-        "msg": ("Hello from a public endpoint! You don't need to be "
-                "authenticated to see this.")
-    }
-    return result
+        // 2. Fetch full user profile from backend
+        console.log(`Fetching user profile for auth0 ID: ${auth0User.sub}`);
+        const profileResponse = await fetch(
+          `https://peer-backend-1014214808131.us-central1.run.app/users/by-auth0/${auth0User.sub}`, //here
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
 
+        console.log("Profile response status:", profileResponse.status);
+        
+        if (!profileResponse.ok) {
+          const errorText = await profileResponse.text();
+          console.error("Profile error response:", errorText);
+          throw new Error(`Failed to fetch user profile: ${profileResponse.status} - ${errorText}`);
+        }
 
+        const userData = await profileResponse.json();
+        console.log("User profile data:", userData);
+        
+        // Verify we have an ID
+        if (!userData.id) {
+          console.error("User ID is missing in response:", userData);
+          throw new Error("User ID is missing in backend response");
+        }
 
-def add_space_manual(s):
-    for i, char in enumerate(s):
-        if char.isdigit() and i > 0 and s[i-1].isalpha():
-            return s[:i] + " " + s[i:]
-    return s
+        setUser({
+          id: userData.id,
+          name: userData.name,
+          email: userData.email,
+          auth0_id: userData.auth0_sub || auth0User.sub,
+          role: userData.role || 'student'
+        });
+      } catch (err) {
+        console.error("User sync error:", err);
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
+      }
+    };
 
-# @app.get("/api/private")
-# def private(auth_result: str = Security(auth.verify)):
-#     """A valid access token is required to access this route"""
-#     result = {
-#         "status": "success",
-#         "msg": ("Hello from a private endpoint! You need to be "
-#                 "authenticated to see this.")
-#     }
-#     return result
+    syncAndLoadUser();
+  }, [isAuthenticated, auth0User, getAccessTokenSilently]);
 
+  return (
+    <UserContext.Provider value={{ user, loading, error }}>
+      {children}
+    </UserContext.Provider>
+  );
+};
 
-# @app.get("/api/private-scoped")
-# def private_scoped(auth_result: str = Security(auth.verify, scopes=['read:messages'])):
-#     """A valid access token and an appropriate scope are required to access
-#     this route
-#     """
-
-#     return auth_result
+export const useUser = () => useContext(UserContext);
 </file>
 
 <file path="backend/models.py">
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select, Float
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select, Float, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -11476,6 +11430,172 @@ class StudentAdjustmentFactor(Base):
     groupNumber = Column(Integer)
     factorWithSelf = Column(Float)
     factorWithoutSelf = Column(Float)
+
+class FinishedSurvey(Base):
+    __tablename__ = "finished_survey"
+    groupID = Column(Integer, primary_key=True)
+</file>
+
+<file path="backend/main.py">
+from fastapi import FastAPI, Security, Depends, HTTPException
+from utils import VerifyToken
+from routers.test import router as test_router
+from routers.api import router as api_router
+from routers.groups import router as group_router
+from sqlalchemy.orm import Session
+from models import SessionLocal, User, Course
+from pydantic import BaseModel
+from typing import List
+from fastapi.middleware.cors import CORSMiddleware
+from dependencies import auth
+from routers.users import router as user_router
+from routers.courses import router as course_router
+from routers.calculations import router as calc_router
+from routers.factor import router as factor_router
+import os
+#from routers.auth import router as auth_router
+
+# Creates app instance
+app = FastAPI()
+#auth = VerifyToken()
+
+app.include_router(api_router, prefix="/api")
+app.include_router(group_router, prefix="/group")
+app.include_router(user_router)
+app.include_router(course_router)
+app.include_router(calc_router, prefix='/calculate')
+app.include_router(factor_router, prefix='/factor')
+#app.include_router(auth_router, prefix="/auth")
+
+
+
+origins = [
+    "http://localhost:3000",  # frontend dev server (React, etc.)
+    "http://127.0.0.1:3000",
+    "http://localhost",       # optional
+    "http://127.0.0.1",
+    "https://peer-assessment-five.vercel.app",
+    
+    
+    # "https://your-production-site.com"
+]
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,              # Allows these origins
+    allow_credentials=True,
+    allow_methods=["*"],                # Allows all HTTP methods
+    allow_headers=["*"],                # Allows all headers
+)
+
+@app.get("/")
+def root():
+    return {"message": "FastAPI is working!"}
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Pydantic model for response
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+
+    class Config:
+        orm_mode = True
+
+class CourseResponse(BaseModel):
+    code: str
+    session: str
+    lecturer_id: int
+
+    class Config:
+        orm_mode = True
+
+@app.get("/users", response_model=List[UserResponse])
+async def get_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    return users
+
+@app.get("/courses/{userID}", response_model=List[CourseResponse])
+async def get_courses(userID: int, db: Session = Depends(get_db)):
+    lecturer_id = userID
+    courses = db.query(Course).filter(Course.lecturer_id == lecturer_id).all()
+    return courses
+
+
+@app.get("/courses/{courseID}/{courseSession}", response_model=CourseResponse)  # Changed to single response
+def get_single_course(
+    courseID: str,
+    courseSession: str,
+    db: Session = Depends(get_db)
+):
+    # Use clearer variable names to avoid shadowing
+    course_code = courseID
+    session = add_space_manual(courseSession)
+    
+    # Get the course with eager loading if there are relationships
+    course = (
+        db.query(Course)
+        .filter(
+            Course.code == course_code,
+            Course.session == session
+        )
+        .first()
+    )
+    
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Course {courseID} for session {courseSession} not found"
+        )
+        
+    return course
+
+
+@app.get("/api/public")
+def public():
+    """No access token required to access this route"""
+
+    result = {
+        "status": "success",
+        "msg": ("Hello from a public endpoint! You don't need to be "
+                "authenticated to see this.")
+    }
+    return result
+
+
+
+def add_space_manual(s):
+    for i, char in enumerate(s):
+        if char.isdigit() and i > 0 and s[i-1].isalpha():
+            return s[:i] + " " + s[i:]
+    return s
+
+# @app.get("/api/private")
+# def private(auth_result: str = Security(auth.verify)):
+#     """A valid access token is required to access this route"""
+#     result = {
+#         "status": "success",
+#         "msg": ("Hello from a private endpoint! You need to be "
+#                 "authenticated to see this.")
+#     }
+#     return result
+
+
+# @app.get("/api/private-scoped")
+# def private_scoped(auth_result: str = Security(auth.verify, scopes=['read:messages'])):
+#     """A valid access token and an appropriate scope are required to access
+#     this route
+#     """
+
+#     return auth_result
 </file>
 
 </files>

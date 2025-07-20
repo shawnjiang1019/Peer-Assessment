@@ -1,11 +1,12 @@
 import Dashboard from '@/components/ui/Dashboard';
 import CoursePageClient from './CoursePageClient';
 import Groups from './GroupClient';
+import RefreshButton from '@/components/refreshbutton';
 
 interface CoursePageProps {
-  params: Promise<{
+  params: {
     courseID: string;
-  }>;
+  };
 }
 
 const CoursePage = async ({ params }: CoursePageProps) => {
@@ -25,3 +26,4 @@ const CoursePage = async ({ params }: CoursePageProps) => {
 };
 
 export default CoursePage;
+

@@ -19,11 +19,11 @@ const FileDrop = () => {
         data.append('file', selectedFile);
 
         try {
-            const response = await fetch('http://127.0.0.1:8080/api/csv', {
+            const response = await fetch('https://peer-backend-1014214808131.us-central1.run.app/api/csv', {
                 method: 'POST',
                 body: data,
                 headers: {
-                    "cid": "CSCC01",
+                    "cid": "STAC67",
 
                     // "Content-Type" is automatically set by browser for FormData
                 }

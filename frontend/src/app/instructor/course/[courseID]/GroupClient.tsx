@@ -41,7 +41,7 @@ const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
   const pathname: string = usePathname();
 
   useEffect(() => {
-    if (!user?.id) return;
+    //if (!user?.id) return;
     
     const loadData = async () => {
       try {

@@ -6,6 +6,7 @@ import { useUser } from "@/providers/user-provider";
 import { Student } from "@/app/student/studentlogic";
 import Factortable from "./FactorTable";
 import ExportCSV from "./ExportCSV";
+import RefreshButton from "../refreshbutton";
 
 // "student_id": 1004985643,
 //             "name": "Yuening Chen",
@@ -55,6 +56,7 @@ const Dashboard = (params: DashboardProps) => {
     return(
         <div>
             <ExportCSV courseID={params.courseID}/>
+            <RefreshButton courseID={params.courseID}/>
             <Factortable data={studentFactors}/>
 
         </div>

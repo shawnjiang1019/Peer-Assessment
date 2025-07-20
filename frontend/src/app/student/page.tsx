@@ -2,7 +2,6 @@
 
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardFooter,
@@ -13,116 +12,77 @@ import {
 import { StudentService, Group } from "./studentlogic";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useAuth0 } from "@auth0/auth0-react";
-import { group } from "console";
+import { useUser } from "@/providers/user-provider";
 
 const Student = () => {
-  const { user, isAuthenticated, isLoading } = useAuth0();
+  const { user } = useUser();
   const router = useRouter();
-  const [ studentServiceInstance ] = useState(() => new StudentService());
-
+  const [studentServiceInstance] = useState(() => new StudentService());
   const [groups, setGroups] = useState<Group[]>([]);
-
-  //get groups and set them
-  useEffect(()=> {
-    const fetchGroups = async () => {
-      if (isAuthenticated && user?.sub){
-        const response = await studentServiceInstance.getGroups(123456);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    
+    const loadData = async () => {
+      try {
+        if (!user) {
+          throw new Error("User not found");
+        }
+        const studentId = await studentServiceInstance.getStudentID(user.email);
+        const groupsData = await studentServiceInstance.getGroups(studentId);
         
-        if (response){
-          setGroups(response);
-        } 
-      
+        if (groupsData) {
+          setGroups(groupsData);
+        } else {
+          setGroups([]);
+        }
+        
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load groups");
+      } finally {
+        setLoading(false);
       }
     };
-    if (isAuthenticated && user?.sub) {
-      fetchGroups();
-    }
 
-    
-    
+    loadData();
+  }, [user?.id, studentServiceInstance]);
 
-  }, [isAuthenticated, user?.sub, studentServiceInstance])
+  if (loading) return <div>Loading surveys...</div>;
+  if (error) return <div>Error: {error}</div>;
+
   return (
     <div className="p-4">
       <h2 className="text-lg font-semibold mb-6">
         You have the following surveys to complete:
       </h2>
 
-       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {groups.length > 0 ? (
-                groups.map((group) => (
-                    
-                    
-                        <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`student/survey/${group.id}/${group.courseID}/${group.courseCode}`)}>
-                        <CardHeader>
-                            <CardTitle>{group.courseCode}</CardTitle>
-                            <CardDescription>Group {group.groupNumber} </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                Group ID: {group.id}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>Begin Survey</p>
-                        </CardFooter>
-                        </button>
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No groups found for this student, ID = {user?.id}</div>
-            )}
-        </div>
-
-      
-
-      
-      
-      {/* <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
-        <button type="button" onClick={() => router.push(`student/course/`)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>STAC67</CardTitle>
-            <CardDescription>Group 2</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Regression Analysis</p>
-          </CardContent>
-        </Card>
-        </button>
-
-
-        <button type="button" onClick={() => router.push(``)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>CSCC01</CardTitle>
-            <CardDescription>Group: 4</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Intro to Software Engineering</p>
-          </CardContent>
-        </Card>
-        </button>
-
-        <button type="button" onClick={() => router.push(``)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>CSCC01</CardTitle>
-            <CardDescription>Group: 4</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Intro to Software Engineering</p>
-          </CardContent>
-        </Card>
-        </button>
-
-      </div> */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+        {groups.length > 0 ? (
+          groups.map((group) => (
+            <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
+              <button type="button" onClick={() => router.push(`student/survey/${group.id}/${group.courseID}/${group.courseCode}`)}>
+                <CardHeader>
+                  <CardTitle>{group.courseCode}</CardTitle>
+                  <CardDescription>Group {group.groupNumber}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-gray-600">
+                    Group ID: {group.id}
+                  </p>
+                </CardContent>
+                <CardFooter>
+                  <p>Begin Survey</p>
+                </CardFooter>
+              </button>
+            </Card>
+          ))
+        ) : (
+          <div className="text-gray-500">No groups found for this student, ID = {user?.id}</div>
+        )}
+      </div>
     </div>
   );
 };

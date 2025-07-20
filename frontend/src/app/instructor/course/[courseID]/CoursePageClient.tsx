@@ -33,7 +33,7 @@ const CoursePageClient =  ({ courseId }: Props) => {
   }, [courseId]);
 
   if (loading) return <p>Loading...</p>;
-  if (error) return <p>Error: {error}</p>;
+  if (error) return <p>Course Error: {error}</p>;
 
   return (
     <div className="container mx-auto py-10">

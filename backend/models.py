@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select, Float
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, select, Float, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -144,3 +144,8 @@ class StudentAdjustmentFactor(Base):
     groupNumber = Column(Integer)
     factorWithSelf = Column(Float)
     factorWithoutSelf = Column(Float)
+
+class FinishedSurvey(Base):
+    __tablename__ = "finished_survey"
+    groupID = Column(Integer, primary_key=True)
+    

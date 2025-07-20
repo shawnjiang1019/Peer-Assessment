@@ -12,6 +12,7 @@ import { useAuth0 } from "@auth0/auth0-react";
 
 import { useUser } from "@/providers/user-provider";
 import { useRouter } from 'next/navigation'
+import RefreshButton from "@/components/refreshbutton";
 
 
 interface CourseData{

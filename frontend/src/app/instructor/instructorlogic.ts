@@ -16,8 +16,32 @@ export class InstructorService{
             return null;
         }
     }
-
-
+    async refreshStudentFactors(courseID: number): Promise<any> {
+        try {
+            // Send courseID as query parameter to match FastAPI endpoint
+            const response = await AxiosClient.post("/factor/refreshFactors", null, {
+                params: {
+                    courseID: courseID
+                }
+            });
+            return response.data;
+        } catch (error: unknown) {
+            console.error('Could not refresh the factors for groups in the course', error);
+            
+            // Type guard to check if error is an Axios error
+            if (error && typeof error === 'object' && 'response' in error) {
+                const axiosError = error as any;
+                console.error('Error response:', axiosError.response?.data);
+                console.error('Error status:', axiosError.response?.status);
+            } else if (error instanceof Error) {
+                console.error('Error message:', error.message);
+            } else {
+                console.error('Unknown error type:', error);
+            }
+            
+            return null;
+        }
+    }
     async getStudentFactors(courseID: number){
         try{
             const response = await AxiosClient.get("/factor/fetchFactors", {

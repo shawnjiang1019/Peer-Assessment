@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor, FinishedSurvey
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -102,6 +102,113 @@ async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
     
     # Don't raise exception for empty results - let caller handle it
     return instances
+@router.post("/refreshFactors")
+async def refreshFactors(courseID: int, db: Session = Depends(get_db)):
+    try:
+        groups: List[Group] = db.query(Group).filter(Group.courseID == courseID).all()
+        finished: List[FinishedSurvey] = db.query(FinishedSurvey).all()
+        finishedGroups = [f.groupID for f in finished]
+        
+        processed_groups = []
+        skipped_groups = []
+        error_groups = []
+        
+        for group in groups:
+            if group.id not in finishedGroups:
+                try:
+                    # Check if the group has any survey responses before processing
+                    survey_data = await get_data(groupID=group.id, courseID=courseID, db=db)
+                    
+                    if not survey_data:
+                        # Skip groups with no survey responses and mark as skipped
+                        skipped_groups.append({
+                            "groupID": group.id,
+                            "reason": "No survey responses found"
+                        })
+                        print(f"Skipped group {group.id} - no survey responses")
+                        continue
+                    
+                    # Process the group
+                    result = await addMultiple(
+                        groupID=group.id, 
+                        courseID=courseID, 
+                        courseCode="STAC67", 
+                        db=db
+                    )
+                    
+                    # Mark group as finished only if processing was successful
+                    finished_survey = FinishedSurvey(groupID=group.id)
+                    db.add(finished_survey)
+                    
+                    processed_groups.append({
+                        "groupID": group.id,
+                        "result": result
+                    })
+                    print(f"Successfully processed group {group.id}")
+                    
+                except HTTPException as he:
+                    # Handle specific HTTP exceptions (like no survey data)
+                    error_groups.append({
+                        "groupID": group.id,
+                        "error": he.detail,
+                        "status_code": he.status_code
+                    })
+                    print(f"HTTP error processing group {group.id}: {he.detail}")
+                    continue
+                    
+                except Exception as e:
+                    # Handle other unexpected errors
+                    error_groups.append({
+                        "groupID": group.id,
+                        "error": str(e),
+                        "status_code": 500
+                    })
+                    print(f"Unexpected error processing group {group.id}: {str(e)}")
+                    continue
+        
+        # Commit only if we have successfully processed groups
+        if processed_groups:
+            db.commit()
+            print(f"Committed changes for {len(processed_groups)} groups")
+        
+        # Build response
+        response = {
+            "total_groups": len(groups),
+            "already_finished": len([g for g in groups if g.id in finishedGroups]),
+            "processed_successfully": len(processed_groups),
+            "skipped_no_data": len(skipped_groups),
+            "errors": len(error_groups)
+        }
+        
+        if processed_groups:
+            response["processed_groups"] = processed_groups
+            response["message"] = f"Successfully processed {len(processed_groups)} groups"
+        
+        if skipped_groups:
+            response["skipped_groups"] = skipped_groups
+            if not processed_groups:
+                response["message"] = f"Skipped {len(skipped_groups)} groups with no survey data"
+            else:
+                response["message"] += f", skipped {len(skipped_groups)} groups with no data"
+        
+        if error_groups:
+            response["error_groups"] = error_groups
+            if not processed_groups and not skipped_groups:
+                response["message"] = f"Failed to process {len(error_groups)} groups due to errors"
+            else:
+                response["message"] += f", {len(error_groups)} groups had errors"
+        
+        if not processed_groups and not skipped_groups and not error_groups:
+            response["message"] = "No unfinished groups found to process"
+        
+        return response
+            
+    except Exception as e:
+        db.rollback()
+        print(f"Critical error in refreshFactors: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Critical error refreshing factors: {str(e)}")
 
 
 async def getStudentsInGroup(groupID: int, db: Session):
