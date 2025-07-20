@@ -4,9 +4,9 @@ import Groups from './GroupClient';
 import RefreshButton from '@/components/refreshbutton';
 
 interface CoursePageProps {
-  params: {
+  params: Promise<{
     courseID: string;
-  };
+  }>;
 }
 
 const CoursePage = async ({ params }: CoursePageProps) => {
