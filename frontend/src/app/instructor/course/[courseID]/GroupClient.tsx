@@ -25,7 +25,7 @@ type GroupsProps = {
 };
 
 const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
-  const url = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/getgroups");
+  const url = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/getgroups/");
   url.searchParams.append('courseID', courseID.toString());
   
   const response = await fetch(url, { method: "GET" });
