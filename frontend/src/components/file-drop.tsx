@@ -1,11 +1,15 @@
 "use client";
 
-
 import { useState, ChangeEvent, FormEvent } from "react";
+import { instructorService } from "@/app/instructor/instructorlogic";
+import { Button } from "./ui/button";
+import { Alert, AlertDescription } from "./ui/alert"; 
+import { Upload } from "lucide-react";
 
 const FileDrop = () => {
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [isUploading, setIsUploading] = useState<boolean>(false);
 
     const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
@@ -15,28 +19,28 @@ const FileDrop = () => {
             return;
         }
 
-        const data = new FormData();
-        data.append('file', selectedFile);
+        setIsUploading(true);
+        setError(null);
 
         try {
-            const response = await fetch('https://peer-backend-1014214808131.us-central1.run.app/api/csv', {
-                method: 'POST',
-                body: data,
-                headers: {
-                    "cid": "STAC67",
+            // Use your instructorService uploadCSV method
+            const result = await instructorService.uploadCSV(
+                selectedFile,
+                "2",        // courseId
+                "STAC67"       // courseCode - you might want to make this dynamic
+            );
 
-                    // "Content-Type" is automatically set by browser for FormData
-                }
-            });
-
-            if (!response.ok) {
-                const errorResult = await response.json();
-                throw new Error(errorResult.error || 'Upload failed');
+            if (result) {
+                console.log("Upload successful:", result);
+                // Optional: reset form
+                setSelectedFile(null);
+                // Reset file input
+                const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+                if (fileInput) fileInput.value = '';
+            } else {
+                // uploadCSV returns null on error
+                setError("Upload failed - please try again");
             }
-
-            const result = await response.json();
-            console.log("Upload successful:", result);
-            setError(null);
             
         } catch (error: unknown) {
             const message = error instanceof Error 
@@ -44,6 +48,8 @@ const FileDrop = () => {
                 : "An unknown error occurred";
             console.error(`Upload error: ${message}`);
             setError(message);
+        } finally {
+            setIsUploading(false);
         }
     };
 
@@ -60,17 +66,42 @@ const FileDrop = () => {
 
     return (
         <div>
-            <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex items-center gap-4">
                 <input
                     type="file"
                     accept=".csv"
                     onChange={handleFileChange}
+                    className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                 />
-                <button type="submit">Upload CSV</button>
-            </form>
-            
-            {error && <div style={{ color: 'red', marginTop: '10px' }}>Error: {error}</div>}
-        </div>
+                <Button 
+                    type="submit" 
+                    disabled={isUploading || !selectedFile}
+                    className="flex items-center gap-2"
+                >
+                    {isUploading ? (
+                        <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            Uploading...
+                        </>
+                    ) : (
+                        <>
+                            <Upload className="h-4 w-4" />
+                            Upload CSV
+                        </>
+                    )}
+                </Button>
+            </div>
+        </form>
+        
+        {error && (
+            <Alert variant="destructive" className="mt-4">
+                <AlertDescription>
+                    Error: {error}
+                </AlertDescription>
+            </Alert>
+        )}
+</div>
     );
 };
 

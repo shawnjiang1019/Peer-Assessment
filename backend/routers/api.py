@@ -28,10 +28,9 @@ async def verifyEmail(email: str = Query(...), db: Session = Depends(get_db)):
     return {"allowed": True}
 
 @router.get("/courses")
-async def getCourses(request: Request,  db: Session = Depends(get_db)):
-    instructor_id = request.headers.get("instructorID")
-    courses = courses = db.query(Course).filter(Course.lecturer_id == instructor_id).all()
-    return courses;
+async def getCourses(instructor_id: int, db: Session = Depends(get_db)):
+    courses = db.query(Course).filter(Course.lecturer_id == instructor_id).all()
+    return courses
 
 
 @router.post("/csv", response_model=StudentCreate)

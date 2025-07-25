@@ -3,6 +3,23 @@ import AxiosClient from "../api/axiosClient";
 
 export class InstructorService{
 
+    async getCourses(lecturer_id: number){
+        try {
+            console.log("lecturer_id: ", lecturer_id)
+            const response = await AxiosClient.get("api/courses", {
+                params: {
+                    instructor_id: lecturer_id
+                }
+            });
+            return response.data;
+
+        } catch(error){
+            console.error('Could not get courses for specified instructor', error);
+            return null;
+        }
+        
+    }
+
     async getStudents(groupID: number){
         try{
             const response = await AxiosClient.get("/group/groups/", {
@@ -81,7 +98,20 @@ export class InstructorService{
         } catch(error){
             console.error('Could not download the csv file', error);
             return null;
+        }
+    }
 
+    async uploadCSV(file: File, courseId: string, courseCode: string) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('courseID', courseId);
+        formData.append('coursecode', courseCode);
+        try {
+            const response = await AxiosClient.post("/api/csv", formData);
+            return response.data;
+        } catch(error) {
+            console.error('Could not upload the csv file', error);
+            return null;
         }
     }
 }

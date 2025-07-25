@@ -19,7 +19,7 @@ import {
 const items = [
   {
     title: "Home",
-    url: "/instructor",
+    url: "/",
     icon: Home,
   },
   // {

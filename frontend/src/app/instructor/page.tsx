@@ -13,6 +13,7 @@ import { useAuth0 } from "@auth0/auth0-react";
 import { useUser } from "@/providers/user-provider";
 import { useRouter } from 'next/navigation'
 import RefreshButton from "@/components/refreshbutton";
+import { instructorService } from "./instructorlogic";
 
 
 interface CourseData{
@@ -24,13 +25,7 @@ interface CourseData{
 
 
 const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
-    const response = await fetch("https://peer-backend-1014214808131.us-central1.run.app/api/courses", {
-        method: "GET",
-        headers: {
-            'instructorID': lecturer_id.toString()
-        }
-    });
-    const data = await response.json();
+    const data = await instructorService.getCourses(lecturer_id);
     console.log(data);
     return data;
 }
@@ -48,6 +43,7 @@ const Instructor = () => {
     useEffect(() => {
         if (!user?.id) return;
         const lecturerId = user.id;
+        console.log(lecturerId);
         const loadData = async () => {
             try {
                 if (!user){
