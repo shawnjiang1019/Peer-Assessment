@@ -1,5 +1,6 @@
 import { group } from "console";
 import AxiosClient from "../api/axiosClient"; 
+import { AxiosError } from "axios";
 
 export class InstructorService{
 
@@ -104,12 +105,27 @@ export class InstructorService{
     async uploadCSV(file: File, courseId: string, courseCode: string) {
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('courseID', courseId);
-        formData.append('coursecode', courseCode);
+        
+        console.log('=== UPLOAD CSV DEBUG ===');
+        console.log('courseId:', courseId);
+        console.log('courseCode:', courseCode);
+        
         try {
-            const response = await AxiosClient.post("/api/csv", formData);
+            const response = await AxiosClient.post("/api/csv", formData, {
+                headers: {
+                    'cid': courseId,
+                    'coursecode': courseCode,
+                    // Don't set Content-Type - let browser handle FormData
+                },
+                // Ensure transformRequest doesn't interfere
+                transformRequest: [(data) => data],
+            });
             return response.data;
         } catch(error) {
+            if (error instanceof AxiosError) {
+                console.error('Upload error details:', error.response?.data);
+                console.error('Request config headers:', error.config?.headers);
+            }
             console.error('Could not upload the csv file', error);
             return null;
         }

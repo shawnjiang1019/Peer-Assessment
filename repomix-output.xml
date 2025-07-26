@@ -114,6 +114,7 @@ frontend/src/components/logoutbutton.tsx
 frontend/src/components/refreshbutton.tsx
 frontend/src/components/TableSurvey.tsx
 frontend/src/components/ui/AFTable.tsx
+frontend/src/components/ui/alert.tsx
 frontend/src/components/ui/button.tsx
 frontend/src/components/ui/card.tsx
 frontend/src/components/ui/Dashboard.tsx
@@ -133,6 +134,8 @@ frontend/src/lib/utils.ts
 frontend/src/providers/auth-provider.tsx
 frontend/src/providers/user-provider.tsx
 frontend/src/providers/user-sync.tsx
+frontend/src/providers/UserProviderLogic.ts
+frontend/src/providers/UserSyncLogic.ts
 frontend/tsconfig.json
 LICENSE
 README.md
@@ -141,27 +144,6 @@ thing.py
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="frontend/src/components/refreshbutton.tsx">
-import React from "react";
-import { instructorService } from "@/app/instructor/instructorlogic";
-type RefreshButtonProps = {
-  courseID: number;
-};
-
-function RefreshButton({ courseID }: RefreshButtonProps) {
-  return (
-    <button
-      className="bg-blue-500 text-white px-6 py-3 rounded-lg text-lg hover:bg-blue-600"
-      onClick={() => instructorService.refreshStudentFactors(courseID)}
-    >
-      Refresh Factors
-    </button>
-  );
-}
-
-export default RefreshButton;
-</file>
 
 <file path=".gitattributes">
 # Auto detect text files and perform LF normalization
@@ -655,403 +637,6 @@ async def getStudents(groupID: int, db: Session = Depends(get_db)):
     return students
 </file>
 
-<file path="backend/routers/factor.py">
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor, FinishedSurvey
-from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Optional, List
-from models import get_db
-from routers.groups import StudentSurveyBase
-import pandas as pd
-
-
-router = APIRouter()
-
-class StudentAdjFactor(BaseModel):
-    name: str
-    courseCode: str 
-    utorid: str
-    courseid: int
-    groupNumber: int
-    factorWithSelf: float
-    factorWithoutSelf: float
-    
-
-async def get_factors(courseID: int, db: Session = Depends(get_db)):
-    factordata = db.query(StudentAdjustmentFactor).filter(
-        StudentAdjustmentFactor.courseid == courseID,
-    ).all()
-    return factordata
-
-@router.get('/fetchFactors')
-async def fetch_factors(courseID: int, db: Session = Depends(get_db)):
-    factordata = await get_factors(courseID=courseID, db=db)
-    return factordata
-
-@router.get('/makeCSV')
-async def make_CSV(courseID: int, db: Session = Depends(get_db)):
-    factordata = await get_factors(courseID=courseID, db=db)
-    data_dicts = [obj.__dict__ for obj in factordata]
-    for d in data_dicts:
-        d.pop('_sa_instance_state', None)
-    df = pd.DataFrame(data_dicts)
-    
-    csv_data = df.to_csv(index=False)
-    return Response(
-        content=csv_data,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=students.csv"}
-    )
-
-
-async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
-    data = await get_data(groupID=groupID, courseID=courseID, db=db)
-    if not includeSelf:
-        data = [
-            d for d in data 
-            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
-        ]
-        
-    num_instances = len(data)
-    if num_instances == 0:
-        print("did not fill out yet")
-        return None
-
-    
-    total = 0
-    for instance in data:
-        total = total + instance.answer  # Changed from instance.get("answer")
-    denominator = total / num_instances
-
-    return denominator
-
-async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
-    if denominator == 0:
-        return None
-    data = await get_data(groupID=groupID, courseID=courseID, db=db)
-    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
-    
-    if not includeSelf:
-        student_instances = [
-            d for d in student_instances 
-            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
-        ]
-    
-    num_instances = len(student_instances)
-
-
-
-    total = 0
-    if num_instances == 0:
-        return 0
-    for instance in student_instances:
-        total = total + instance.answer  # Changed from instance.get("answer")
-    numerator = total / num_instances
-    factor = numerator / denominator
-    return factor
-
-async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
-    instances = db.query(StudentSurvey).filter(
-        StudentSurvey.course_id == courseID,
-        StudentSurvey.group_id == groupID
-    ).all()
-    
-    # Don't raise exception for empty results - let caller handle it
-    return instances
-@router.post("/refreshFactors")
-async def refreshFactors(courseID: int, db: Session = Depends(get_db)):
-    try:
-        groups: List[Group] = db.query(Group).filter(Group.courseID == courseID).all()
-        finished: List[FinishedSurvey] = db.query(FinishedSurvey).all()
-        finishedGroups = [f.groupID for f in finished]
-        
-        processed_groups = []
-        
-        for group in groups:
-            if group.id not in finishedGroups:
-                # Mark group as finished first
-                finished_survey = FinishedSurvey(groupID=group.id)
-                db.add(finished_survey)
-                
-                # Process the group
-                result = await addMultiple(
-                    groupID=group.id, 
-                    courseID=courseID, 
-                    courseCode="STAC67", 
-                    db=db
-                )
-                processed_groups.append({
-                    "groupID": group.id,
-                    "result": result
-                })
-        
-        if processed_groups:
-            db.commit()
-            return {
-                "message": f"Successfully processed {len(processed_groups)} groups",
-                "processed_groups": processed_groups
-            }
-        else:
-            return {
-                "message": "No unfinished groups found to process"
-            }
-            
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error refreshing factors: {str(e)}")
-
-
-async def getStudentsInGroup(groupID: int, db: Session):
-    group = db.query(Group).filter(
-        Group.id == groupID,
-    ).first()
-
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found in this course")
-
-    # Query StudentGroup directly with the provided groupID
-    student_group_relations = db.query(StudentGroup).filter(
-        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
-    ).all()
-
-    # 3. Fixed list comprehension syntax
-    studentIDs = [row.student_id for row in student_group_relations]
-
-    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
-    return students
-
-
-
-async def getGroup(groupID: int, db: Session):
-    group: Group = db.query(Group).filter(Group.id == groupID).first()
-    return group.groupNumber
-    
-
-@router.post("/addmultiple/")
-async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
-    try:
-        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
-        groupNumber: int = await getGroup(groupID=groupID, db=db)
-        # Get students in the group
-        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
-        print(f"Found {len(students)} students")
-        
-        if not students:
-            raise HTTPException(status_code=404, detail="No students found in this group")
-        
-        # Check if there are any survey responses at all
-        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
-        if not survey_data:
-            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
-        
-        results = []
-        skipped_students = []
-        
-        for student in students:
-            print(f"Processing student: {student.name} (ID: {student.student_id})")
-            
-            try:
-                # Calculate denominator without self-evaluation
-                denominatorw = await get_denominator(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    includeSelf=True, 
-                    db=db
-                )
-                
-                factorw = await calculateFactor(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    denominator=denominatorw,
-                    includeSelf=True, 
-                    db=db
-                )
-                
-                denominatorwo = await get_denominator(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    includeSelf=False, 
-                    db=db
-                )
-                
-                factorwo = await calculateFactor(
-                    groupID=groupID, 
-                    courseID=courseID, 
-                    studentID=student.id,
-                    denominator=denominatorwo,
-                    includeSelf=False, 
-                    db=db
-                )
-                
-                # Check if we got valid factors
-                if factorwo is None and factorw is None:
-                    print(f"Skipping {student.name} - insufficient evaluation data")
-                    skipped_students.append({
-                        "student_id": student.student_id,
-                        "name": student.name,
-                        "reason": "Insufficient evaluation data"
-                    })
-                    continue
-                
-                # Create Pydantic model
-                data: StudentAdjFactor = StudentAdjFactor(
-                    name=student.name,
-                    courseCode=courseCode,
-                    utorid=student.utorid,
-                    groupNumber=groupNumber,
-                    courseid=courseID,
-                    factorWithoutSelf=factorwo,
-                    factorWithSelf=factorw
-                )
-                
-                # Create database instance
-                db_instance = StudentAdjustmentFactor(**data.model_dump())
-                db.add(db_instance)
-                print(f"Added {student.name} to database session")
-                
-                results.append({
-                    "student_id": student.student_id,
-                    "name": student.name,
-                    "factorWithSelf": factorw,
-                    "factorWithoutSelf": factorwo
-                })
-                
-            except Exception as e:
-                print(f"Error processing student {student.name}: {str(e)}")
-                skipped_students.append({
-                    "student_id": student.student_id,
-                    "name": student.name,
-                    "reason": str(e)
-                })
-                continue
-        
-        # Only commit if we have successful results
-        if results:
-            db.commit()
-            print("Successfully committed all changes")
-        else:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
-        
-        response = {
-            "message": f"Successfully processed {len(results)} students",
-            "results": results
-        }
-        
-        if skipped_students:
-            response["skipped_students"] = skipped_students
-            response["message"] += f", skipped {len(skipped_students)} students"
-        
-        return response
-        
-    except HTTPException as he:
-        print(f"HTTP Exception: {he.detail}")
-        db.rollback()
-        raise
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
-
-
-
-
-@router.post('/addData/')
-async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
-    try:
-        print(f"Processing single student data for studentID: {studentID}")
-        
-        # Check if there are any survey responses at all
-        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
-        if not survey_data:
-            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
-        
-        # Calculate factors
-        denominatorw = await get_denominator(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            includeSelf=True, 
-            db=db
-        )
-        
-        factorw = await calculateFactor(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            denominator=denominatorw,
-            includeSelf=True, 
-            db=db
-        )
-        
-        denominatorwo = await get_denominator(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            includeSelf=False, 
-            db=db
-        )
-        
-        factorwo = await calculateFactor(
-            groupID=groupID, 
-            courseID=courseID, 
-            studentID=studentID,
-            denominator=denominatorwo,
-            includeSelf=False, 
-            db=db
-        )
-        
-        # Check if we got valid factors
-        if factorwo is None or factorw is None:
-            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
-        
-        # Get student info
-        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
-        if not student_row:
-            raise HTTPException(status_code=404, detail="Student not found")
-        
-        # Create data model
-        data: StudentAdjFactor = StudentAdjFactor(
-            name=student_row.name,
-            courseCode=courseCode,
-            utorid=student_row.utorid,
-            groupNumber=groupID,
-            courseid=courseID,
-            factorWithoutSelf=factorwo,
-            factorWithSelf=factorw
-        )
-        
-        # Save to database
-        db_instance = StudentAdjustmentFactor(**data.model_dump())
-        db.add(db_instance)
-        db.commit()
-        db.refresh(db_instance)
-        
-        return {
-            "message": "Factor added to database successfully",
-            "data": {
-                "student_id": studentID,
-                "name": student_row.name,
-                "factorWithSelf": factorw,
-                "factorWithoutSelf": factorwo
-            }
-        }
-        
-    except HTTPException as he:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
-</file>
-
 <file path="backend/routers/factor1.py">
 from fastapi import APIRouter, Depends, HTTPException
 from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor
@@ -1394,9 +979,10 @@ async def protected_route(user: dict = Depends(validate_token)):
 from pydantic import BaseModel
 
 class StudentCreate(BaseModel):
-    name: str
-    email: str
-    id: int
+    status: str
+    filename: str
+    created_count: int
+    total_rows: int
 </file>
 
 <file path="backend/utils.py">
@@ -6487,86 +6073,6 @@ export default function UserProfile() {
 }
 </file>
 
-<file path="frontend/src/components/file-drop.tsx">
-"use client";
-
-
-import { useState, ChangeEvent, FormEvent } from "react";
-
-const FileDrop = () => {
-    const [selectedFile, setSelectedFile] = useState<File | null>(null);
-    const [error, setError] = useState<string | null>(null);
-
-    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-
-        if (!selectedFile) {
-            setError("Please select a file first");
-            return;
-        }
-
-        const data = new FormData();
-        data.append('file', selectedFile);
-
-        try {
-            const response = await fetch('https://peer-backend-1014214808131.us-central1.run.app/api/csv', {
-                method: 'POST',
-                body: data,
-                headers: {
-                    "cid": "STAC67",
-
-                    // "Content-Type" is automatically set by browser for FormData
-                }
-            });
-
-            if (!response.ok) {
-                const errorResult = await response.json();
-                throw new Error(errorResult.error || 'Upload failed');
-            }
-
-            const result = await response.json();
-            console.log("Upload successful:", result);
-            setError(null);
-            
-        } catch (error: unknown) {
-            const message = error instanceof Error 
-                ? error.message 
-                : "An unknown error occurred";
-            console.error(`Upload error: ${message}`);
-            setError(message);
-        }
-    };
-
-    const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-        setError(null);
-        const files = e.target.files;
-        
-        if (files && files.length > 0) {
-            setSelectedFile(files[0]);
-        } else {
-            setSelectedFile(null);
-        }
-    };
-
-    return (
-        <div>
-            <form onSubmit={handleSubmit}>
-                <input
-                    type="file"
-                    accept=".csv"
-                    onChange={handleFileChange}
-                />
-                <button type="submit">Upload CSV</button>
-            </form>
-            
-            {error && <div style={{ color: 'red', marginTop: '10px' }}>Error: {error}</div>}
-        </div>
-    );
-};
-
-export default FileDrop;
-</file>
-
 <file path="frontend/src/components/loginbutton.tsx">
 import React from 'react';
 import { useAuth0 } from '@auth0/auth0-react';
@@ -6602,6 +6108,27 @@ const LogoutButton = () => {
 export default LogoutButton;
 </file>
 
+<file path="frontend/src/components/refreshbutton.tsx">
+import React from "react";
+import { instructorService } from "@/app/instructor/instructorlogic";
+type RefreshButtonProps = {
+  courseID: number;
+};
+
+function RefreshButton({ courseID }: RefreshButtonProps) {
+  return (
+    <button
+      className="bg-blue-500 text-white px-6 py-3 rounded-lg text-lg hover:bg-blue-600"
+      onClick={() => instructorService.refreshStudentFactors(courseID)}
+    >
+      Refresh Factors
+    </button>
+  );
+}
+
+export default RefreshButton;
+</file>
+
 <file path="frontend/src/components/ui/AFTable.tsx">
 import { useState, useEffect } from "react";
 
@@ -6610,6 +6137,75 @@ const AdjustmentFactorTable = () => {
 }
 
 export default AdjustmentFactorTable;
+</file>
+
+<file path="frontend/src/components/ui/alert.tsx">
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const alertVariants = cva(
+  "relative w-full rounded-lg border px-4 py-3 text-sm grid has-[>svg]:grid-cols-[calc(var(--spacing)*4)_1fr] grid-cols-[0_1fr] has-[>svg]:gap-x-3 gap-y-0.5 items-start [&>svg]:size-4 [&>svg]:translate-y-0.5 [&>svg]:text-current",
+  {
+    variants: {
+      variant: {
+        default: "bg-card text-card-foreground",
+        destructive:
+          "text-destructive bg-card [&>svg]:text-current *:data-[slot=alert-description]:text-destructive/90",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+function Alert({
+  className,
+  variant,
+  ...props
+}: React.ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
+  return (
+    <div
+      data-slot="alert"
+      role="alert"
+      className={cn(alertVariants({ variant }), className)}
+      {...props}
+    />
+  )
+}
+
+function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="alert-title"
+      className={cn(
+        "col-start-2 line-clamp-1 min-h-4 font-medium tracking-tight",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function AlertDescription({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="alert-description"
+      className={cn(
+        "text-muted-foreground col-start-2 grid justify-items-start gap-1 text-sm [&_p]:leading-relaxed",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Alert, AlertTitle, AlertDescription }
 </file>
 
 <file path="frontend/src/components/ui/button.tsx">
@@ -7975,6 +7571,136 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
 }
 </file>
 
+<file path="frontend/src/providers/UserProviderLogic.ts">
+import AxiosClient from "@/app/api/axiosClient";
+
+interface SyncUserPayload {
+  sub: string;
+  email: string;
+  name: string;
+}
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  auth0_id?: string;
+  role: string;
+}
+
+// Backend response interface (what comes from the API)
+interface BackendUser {
+  id: number;
+  name: string;
+  email: string;
+  auth0_sub?: string;  // Backend uses auth0_sub
+  role: string;
+}
+
+export class UserProviderService {
+  
+  async syncUser(payload: SyncUserPayload, token: string): Promise<any> {
+    try {
+      console.log(process.env.DEV);
+      console.log("Syncing user with backend...");
+      console.log("Sync payload:", payload);
+      
+      const response = await AxiosClient.post("/users", payload, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        }
+      });
+
+      console.log("Sync successful, user data:", response.data);
+      return response.data;
+    } catch (error) {
+      console.error("Sync error:", error);
+      throw new Error(`Failed to sync user: ${error}`);
+    }
+  }
+
+  async getUserByAuth0Id(auth0Id: string, token: string): Promise<BackendUser> {
+    try {
+      console.log(`Fetching user profile for auth0 ID: ${auth0Id}`);
+      
+      const response = await AxiosClient.get(`/users/by-auth0/${auth0Id}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      console.log("User profile data:", response.data);
+      
+      // Verify we have an ID
+      if (!response.data.id) {
+        console.error("User ID is missing in response:", response.data);
+        throw new Error("User ID is missing in backend response");
+      }
+
+      return response.data;
+    } catch (error) {
+      console.error("Profile fetch error:", error);
+      throw new Error(`Failed to fetch user profile: ${error}`);
+    }
+  }
+
+  async syncAndLoadUser(auth0User: any, token: string): Promise<User> {
+    // 1. Sync user info to backend
+    const syncPayload: SyncUserPayload = {
+      sub: auth0User.sub,
+      email: auth0User.email,
+      name: auth0User.name || "", // Handle potential undefined name
+    };
+    
+    await this.syncUser(syncPayload, token);
+
+    // 2. Fetch full user profile from backend
+    const userData = await this.getUserByAuth0Id(auth0User.sub, token);
+    
+    // Transform backend response to frontend interface
+    return {
+      id: userData.id,
+      name: userData.name,
+      email: userData.email,
+      auth0_id: userData.auth0_sub || auth0User.sub, // Map auth0_sub to auth0_id
+      role: userData.role || 'student'
+    };
+  }
+}
+
+export const userProviderService = new UserProviderService();
+</file>
+
+<file path="frontend/src/providers/UserSyncLogic.ts">
+import AxiosClient from "@/app/api/axiosClient";
+
+export class UserSyncService {
+    async checkUsers(user: any, token: string) {
+        try {
+            const response = await AxiosClient.post("/users", {
+                sub: user.sub,
+                email: user.email,
+                name: user.name,
+                // Add any additional claims
+            }, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            
+            return response.data;
+        } catch (error) {
+            console.error('User sync failed:', error);
+            throw error; // Re-throw if you want calling code to handle it
+        }
+    }
+}
+
+export const userSyncService = new UserSyncService();
+</file>
+
 <file path="frontend/tsconfig.json">
 {
   "compilerOptions": {
@@ -8291,6 +8017,469 @@ async def findFactors(studentID: int, groupID: int, courseID: int, db: Session =
     return factorDict
 </file>
 
+<file path="backend/routers/factor.py">
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse, StudentSurvey, StudentAdjustmentFactor, FinishedSurvey
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from models import get_db
+from routers.groups import StudentSurveyBase
+import pandas as pd
+
+
+router = APIRouter()
+
+class StudentAdjFactor(BaseModel):
+    name: str
+    courseCode: str 
+    utorid: str
+    courseid: int
+    groupNumber: int
+    factorWithSelf: float
+    factorWithoutSelf: float
+    
+
+async def get_factors(courseID: int, db: Session = Depends(get_db)):
+    factordata = db.query(StudentAdjustmentFactor).filter(
+        StudentAdjustmentFactor.courseid == courseID,
+    ).all()
+    return factordata
+
+@router.get('/fetchFactors')
+async def fetch_factors(courseID: int, db: Session = Depends(get_db)):
+    factordata = await get_factors(courseID=courseID, db=db)
+    return factordata
+
+@router.get('/makeCSV')
+async def make_CSV(courseID: int, db: Session = Depends(get_db)):
+    factordata = await get_factors(courseID=courseID, db=db)
+    data_dicts = [obj.__dict__ for obj in factordata]
+    for d in data_dicts:
+        d.pop('_sa_instance_state', None)
+    df = pd.DataFrame(data_dicts)
+    
+    csv_data = df.to_csv(index=False)
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=students.csv"}
+    )
+
+
+async def get_denominator(groupID: int, courseID: int, studentID: int, includeSelf: bool, db: Session = Depends(get_db)):
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    if not includeSelf:
+        data = [
+            d for d in data 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+        
+    num_instances = len(data)
+    if num_instances == 0:
+        print("did not fill out yet")
+        return None
+
+    
+    total = 0
+    for instance in data:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    denominator = total / num_instances
+
+    return denominator
+
+async def calculateFactor(groupID: int, courseID: int, studentID: int, denominator: int, includeSelf: bool, db: Session = Depends(get_db)):
+    if denominator == 0:
+        return None
+    data = await get_data(groupID=groupID, courseID=courseID, db=db)
+    student_instances = [d for d in data if d.evaluatee_id == studentID]  # Changed from d.get("evaluatee_id")
+    
+    if not includeSelf:
+        student_instances = [
+            d for d in student_instances 
+            if not (d.evaluator_id == studentID and d.evaluatee_id == studentID)
+        ]
+    
+    num_instances = len(student_instances)
+
+
+
+    total = 0
+    if num_instances == 0:
+        return 0
+    for instance in student_instances:
+        total = total + instance.answer  # Changed from instance.get("answer")
+    numerator = total / num_instances
+    factor = numerator / denominator
+    return factor
+
+async def get_data(groupID: int, courseID: int, db: Session = Depends(get_db)):
+    instances = db.query(StudentSurvey).filter(
+        StudentSurvey.course_id == courseID,
+        StudentSurvey.group_id == groupID
+    ).all()
+    
+    # Don't raise exception for empty results - let caller handle it
+    return instances
+@router.post("/refreshFactors")
+async def refreshFactors(courseID: int, db: Session = Depends(get_db)):
+    try:
+        groups: List[Group] = db.query(Group).filter(Group.courseID == courseID).all()
+        finished: List[FinishedSurvey] = db.query(FinishedSurvey).all()
+        finishedGroups = [f.groupID for f in finished]
+        
+        processed_groups = []
+        skipped_groups = []
+        error_groups = []
+        
+        for group in groups:
+            if group.id not in finishedGroups:
+                try:
+                    # Check if the group has any survey responses before processing
+                    survey_data = await get_data(groupID=group.id, courseID=courseID, db=db)
+                    
+                    if not survey_data:
+                        # Skip groups with no survey responses and mark as skipped
+                        skipped_groups.append({
+                            "groupID": group.id,
+                            "reason": "No survey responses found"
+                        })
+                        print(f"Skipped group {group.id} - no survey responses")
+                        continue
+                    
+                    # Process the group
+                    result = await addMultiple(
+                        groupID=group.id, 
+                        courseID=courseID, 
+                        courseCode="STAC67", 
+                        db=db
+                    )
+                    
+                    # Mark group as finished only if processing was successful
+                    finished_survey = FinishedSurvey(groupID=group.id)
+                    db.add(finished_survey)
+                    
+                    processed_groups.append({
+                        "groupID": group.id,
+                        "result": result
+                    })
+                    print(f"Successfully processed group {group.id}")
+                    
+                except HTTPException as he:
+                    # Handle specific HTTP exceptions (like no survey data)
+                    error_groups.append({
+                        "groupID": group.id,
+                        "error": he.detail,
+                        "status_code": he.status_code
+                    })
+                    print(f"HTTP error processing group {group.id}: {he.detail}")
+                    continue
+                    
+                except Exception as e:
+                    # Handle other unexpected errors
+                    error_groups.append({
+                        "groupID": group.id,
+                        "error": str(e),
+                        "status_code": 500
+                    })
+                    print(f"Unexpected error processing group {group.id}: {str(e)}")
+                    continue
+        
+        # Commit only if we have successfully processed groups
+        if processed_groups:
+            db.commit()
+            print(f"Committed changes for {len(processed_groups)} groups")
+        
+        # Build response
+        response = {
+            "total_groups": len(groups),
+            "already_finished": len([g for g in groups if g.id in finishedGroups]),
+            "processed_successfully": len(processed_groups),
+            "skipped_no_data": len(skipped_groups),
+            "errors": len(error_groups)
+        }
+        
+        if processed_groups:
+            response["processed_groups"] = processed_groups
+            response["message"] = f"Successfully processed {len(processed_groups)} groups"
+        
+        if skipped_groups:
+            response["skipped_groups"] = skipped_groups
+            if not processed_groups:
+                response["message"] = f"Skipped {len(skipped_groups)} groups with no survey data"
+            else:
+                response["message"] += f", skipped {len(skipped_groups)} groups with no data"
+        
+        if error_groups:
+            response["error_groups"] = error_groups
+            if not processed_groups and not skipped_groups:
+                response["message"] = f"Failed to process {len(error_groups)} groups due to errors"
+            else:
+                response["message"] += f", {len(error_groups)} groups had errors"
+        
+        if not processed_groups and not skipped_groups and not error_groups:
+            response["message"] = "No unfinished groups found to process"
+        
+        return response
+            
+    except Exception as e:
+        db.rollback()
+        print(f"Critical error in refreshFactors: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Critical error refreshing factors: {str(e)}")
+
+
+async def getStudentsInGroup(groupID: int, db: Session):
+    group = db.query(Group).filter(
+        Group.id == groupID,
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found in this course")
+
+    # Query StudentGroup directly with the provided groupID
+    student_group_relations = db.query(StudentGroup).filter(
+        StudentGroup.group_id == groupID  # Fixed filter to use the parameter
+    ).all()
+
+    # 3. Fixed list comprehension syntax
+    studentIDs = [row.student_id for row in student_group_relations]
+
+    students = db.query(Student).filter(Student.id.in_(studentIDs)).all()
+    return students
+
+
+
+async def getGroup(groupID: int, db: Session):
+    group: Group = db.query(Group).filter(Group.id == groupID).first()
+    return group.groupNumber
+    
+
+@router.post("/addmultiple/")
+async def addMultiple(groupID: int, courseID: int, courseCode: str, db: Session = Depends(get_db)):
+    try:
+        print(f"Starting addMultiple with groupID: {groupID}, courseID: {courseID}")
+        groupNumber: int = await getGroup(groupID=groupID, db=db)
+        # Get students in the group
+        students: list[Student] = await getStudentsInGroup(groupID=groupID, db=db)
+        print(f"Found {len(students)} students")
+        
+        if not students:
+            raise HTTPException(status_code=404, detail="No students found in this group")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        results = []
+        skipped_students = []
+        
+        for student in students:
+            print(f"Processing student: {student.name} (ID: {student.student_id})")
+            
+            try:
+                # Calculate denominator without self-evaluation
+                denominatorw = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                factorw = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    denominator=denominatorw,
+                    includeSelf=True, 
+                    db=db
+                )
+                
+                denominatorwo = await get_denominator(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                factorwo = await calculateFactor(
+                    groupID=groupID, 
+                    courseID=courseID, 
+                    studentID=student.id,
+                    denominator=denominatorwo,
+                    includeSelf=False, 
+                    db=db
+                )
+                
+                # Check if we got valid factors
+                if factorwo is None and factorw is None:
+                    print(f"Skipping {student.name} - insufficient evaluation data")
+                    skipped_students.append({
+                        "student_id": student.student_id,
+                        "name": student.name,
+                        "reason": "Insufficient evaluation data"
+                    })
+                    continue
+                
+                # Create Pydantic model
+                data: StudentAdjFactor = StudentAdjFactor(
+                    name=student.name,
+                    courseCode=courseCode,
+                    utorid=student.utorid,
+                    groupNumber=groupNumber,
+                    courseid=courseID,
+                    factorWithoutSelf=factorwo,
+                    factorWithSelf=factorw
+                )
+                
+                # Create database instance
+                db_instance = StudentAdjustmentFactor(**data.model_dump())
+                db.add(db_instance)
+                print(f"Added {student.name} to database session")
+                
+                results.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "factorWithSelf": factorw,
+                    "factorWithoutSelf": factorwo
+                })
+                
+            except Exception as e:
+                print(f"Error processing student {student.name}: {str(e)}")
+                skipped_students.append({
+                    "student_id": student.student_id,
+                    "name": student.name,
+                    "reason": str(e)
+                })
+                continue
+        
+        # Only commit if we have successful results
+        if results:
+            db.commit()
+            print("Successfully committed all changes")
+        else:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="No students could be processed. All students may be missing evaluation data.")
+        
+        response = {
+            "message": f"Successfully processed {len(results)} students",
+            "results": results
+        }
+        
+        if skipped_students:
+            response["skipped_students"] = skipped_students
+            response["message"] += f", skipped {len(skipped_students)} students"
+        
+        return response
+        
+    except HTTPException as he:
+        print(f"HTTP Exception: {he.detail}")
+        db.rollback()
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing students: {str(e)}")
+
+
+
+
+@router.post('/addData/')
+async def addSingleStudentData(groupID: int, courseID: int, courseCode: str, studentID: int, db: Session = Depends(get_db)):
+    try:
+        print(f"Processing single student data for studentID: {studentID}")
+        
+        # Check if there are any survey responses at all
+        survey_data = await get_data(groupID=groupID, courseID=courseID, db=db)
+        if not survey_data:
+            raise HTTPException(status_code=400, detail="No survey responses found for this group. Students must complete evaluations first.")
+        
+        # Calculate factors
+        denominatorw = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=True, 
+            db=db
+        )
+        
+        factorw = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorw,
+            includeSelf=True, 
+            db=db
+        )
+        
+        denominatorwo = await get_denominator(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            includeSelf=False, 
+            db=db
+        )
+        
+        factorwo = await calculateFactor(
+            groupID=groupID, 
+            courseID=courseID, 
+            studentID=studentID,
+            denominator=denominatorwo,
+            includeSelf=False, 
+            db=db
+        )
+        
+        # Check if we got valid factors
+        if factorwo is None or factorw is None:
+            raise HTTPException(status_code=400, detail="Insufficient evaluation data for this student. Student may not have been evaluated by peers.")
+        
+        # Get student info
+        student_row: Student = db.query(Student).filter(Student.id == studentID).first()
+        if not student_row:
+            raise HTTPException(status_code=404, detail="Student not found")
+        
+        # Create data model
+        data: StudentAdjFactor = StudentAdjFactor(
+            name=student_row.name,
+            courseCode=courseCode,
+            utorid=student_row.utorid,
+            groupNumber=groupID,
+            courseid=courseID,
+            factorWithoutSelf=factorwo,
+            factorWithSelf=factorw
+        )
+        
+        # Save to database
+        db_instance = StudentAdjustmentFactor(**data.model_dump())
+        db.add(db_instance)
+        db.commit()
+        db.refresh(db_instance)
+        
+        return {
+            "message": "Factor added to database successfully",
+            "data": {
+                "student_id": studentID,
+                "name": student_row.name,
+                "factorWithSelf": factorw,
+                "factorWithoutSelf": factorwo
+            }
+        }
+        
+    except HTTPException as he:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error processing student data: {str(e)}")
+</file>
+
 <file path="frontend/eslint.config.mjs">
 // import { dirname } from "path";
 // import { fileURLToPath } from "url";
@@ -8374,28 +8563,6 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
-</file>
-
-<file path="frontend/src/app/authRedirect/authlogic.ts">
-import { User } from "lucide-react";
-
-interface User {
-  id: number;
-  name: string;
-  email: string;
-  auth0_id?: string;
-  role: string;
-}
-
-export class AuthService{
-    async getUserRole(sub: string): Promise<string | null>{
-        
-        const response = await fetch(`http://127.0.0.1:8080/users/by-auth0/${sub}`);
-        const result: User = await response.json();
-
-        return result.role;
-    }
-}
 </file>
 
 <file path="frontend/src/app/authRedirect/page.tsx">
@@ -8599,127 +8766,6 @@ export default AuthRedirect;
 }
 </file>
 
-<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
-
-import { useUser } from "@/providers/user-provider";
-import { useRouter, usePathname  } from 'next/navigation'
-import { Group } from "next/dist/shared/lib/router/utils/route-regex";
-
-
-interface StudentData{
-    email: string;
-    id: number;
-    student_id: number;
-    firstname: string;
-    utorid: number;
-    name: string;
-    lastname: string;
-}
-
-interface Props{
-  groupID: number;
-}
-
-
-const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
-    const url: URL = new URL("http://127.0.0.1:8080/group/groups");
-    url.searchParams.append('groupID', groupID.toString());
-
-    const response = await fetch(url, {
-        method: "GET",
-    });
-    const data: StudentData[] = await response.json();
-    return data;
-}
-
-const GroupStudentClient = ({ groupID } : Props) => {
-    const { user } = useUser();
-    const [students, setStudents] = useState<StudentData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const pathname = usePathname();
-
-    const router = useRouter();
-
-    useEffect(() => {
-        if (!user?.id) return;
-        const lecturerId = user.id;
-        const loadData = async () => {
-            try {
-                if (!user){
-                    throw new Error("Uh Oh");
-                }
-                
-                const studentdata: StudentData[] = await fetchGroups(groupID); 
-                setStudents(studentdata);
-                
-                
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load students in group");
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        loadData();
-    }, [user?.id]);
-
-    if (loading) return <div>Loading students in group...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {students.length > 0 ? (
-                students.map((student) => (
-                    
-                    
-                        <Card key={`${student.id}`} className="hover:shadow-lg transition-shadow">
-                        
-                        <CardHeader>
-                            <CardTitle>{student.name}</CardTitle>
-                            <CardDescription>Group: {groupID}</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                {student.email}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>{student.utorid}</p>
-                        </CardFooter>
-                        
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No groups found for this course, ID = {groupID}</div>
-            )}
-        </div>
-    );
-    
-    
-
-}
-
-export default GroupStudentClient;
-</file>
-
 <file path="frontend/src/app/instructor/course/page.tsx">
 'use client'
 
@@ -8740,85 +8786,6 @@ const coursePage = () => {
 }
 
 export default coursePage;
-</file>
-
-<file path="frontend/src/app/instructor/instructorlogic.ts">
-import { group } from "console";
-import AxiosClient from "../api/axiosClient"; 
-
-export class InstructorService{
-
-    async getStudents(groupID: number){
-        try{
-            const response = await AxiosClient.get("/group/groups/", {
-                params: {
-                    groupID: groupID
-                }
-            });
-            return response.data;
-        } catch(error){
-            console.error('Could not get the students in the specified group', error);
-            return null;
-        }
-    }
-    async refreshStudentFactors(courseID: number){
-        try{
-            const response = await AxiosClient.post("/factor/refreshFactors", {
-                courseID: courseID    
-            });
-            return response.data;
-        } catch(error){
-            console.error('Could not refresh the factors for groups in the course', error);
-            return null;
-        }
-    }
-
-    async getStudentFactors(courseID: number){
-        try{
-            const response = await AxiosClient.get("/factor/fetchFactors", {
-                params: {
-                    courseID: courseID,
-                }
-            });
-            return response.data;
-        } catch(error){
-            console.error('Could not get the factor for the specified student', error);
-            return null;
-
-        }
-    }
-
-    async downloadCSV(courseID: number){
-        try{
-            const response = await AxiosClient.get("/factor/makeCSV", {
-                params: {
-                    courseID: courseID,
-                },
-                responseType: 'blob'
-            });
-            const blob = new Blob([response.data], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = `course_${courseID}_students.csv`;
-            document.body.appendChild(link);
-            link.click();
-            
-            // Cleanup
-            link.remove();
-            URL.revokeObjectURL(url);
-            
-            return { success: true };
-        } catch(error){
-            console.error('Could not download the csv file', error);
-            return null;
-
-        }
-    }
-}
-
-
-export const instructorService = new InstructorService();
 </file>
 
 <file path="frontend/src/app/student/group/grouplogic.ts">
@@ -9079,168 +9046,6 @@ if __name__ == "__main__":
     create_tables()
 </file>
 
-<file path="backend/routers/api.py">
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
-from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
-from io import BytesIO
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-
-from starlette.concurrency import run_in_threadpool
-import pandas as pd
-from schemas import StudentCreate
-
-router = APIRouter();
-
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@router.get("/verifyemail")
-async def verifyEmail(email: str = Query(...), db: Session = Depends(get_db)):
-    allowed_email = db.query(Student).filter(Student.email == email).first();
-    if not allowed_email:
-        raise HTTPException(status_code=400, detail="Email not authorized")
-    return {"allowed": True}
-
-@router.get("/courses")
-async def getCourses(request: Request,  db: Session = Depends(get_db)):
-    instructor_id = request.headers.get("instructorID")
-    courses = courses = db.query(Course).filter(Course.lecturer_id == instructor_id).all()
-    return courses;
-
-
-@router.post("/csv", response_model=StudentCreate)
-async def saveCSV(
-    file: UploadFile = File(..., description="CSV file containing student data"),
-    courseID: int = Header(..., alias="cid", description="Course ID"),
-    coursecode: str = Header(..., alias="coursecode", description="Course code"),
-    db: Session = Depends(get_db)
-):
-    contents = await file.read()
-    file_stream = BytesIO(contents)
-    df = await run_in_threadpool(pd.read_csv, file_stream)
-    df = df.astype(object).where(pd.notnull(df), None)
-
-    required_columns = ["ID", "Email", "First Name", "Last Name", "UTORid", "Group Number", "Student Number"]
-    missing = [col for col in required_columns if col not in df.columns]
-    if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing required columns: {', '.join(missing)}"
-        )
-    
-    created_count = 0
-    try:
-        # Pre-cache groups to minimize database queries
-        group_cache = {}
-        
-        for i in range(len(df.index)):
-            # 1. Create student if not exists
-            student_data = {
-                "id": df["ID"][i],
-                "email": df["Email"][i],
-                "name": f"{df['First Name'][i]} {df['Last Name'][i]}",
-                "student_id": df["Student Number"][i],
-                "utorid": df["UTORid"][i],
-                "firstname": df["First Name"][i],
-                "lastname": df["Last Name"][i]
-            }
-            
-            student = db.query(Student).filter_by(id=student_data["id"]).first()
-            if not student:
-                student = Student(**student_data)
-                db.add(student)
-                db.flush()  # Assign ID without committing transaction
-            else:
-                # Update existing student if needed
-                for key, value in student_data.items():
-                    setattr(student, key, value)
-
-            # 2. Create enrollment
-            enrollment = db.query(StudentCourse).filter_by(
-                student_id=student.id,  # Use student.id NOT student.student_id
-                course_id=courseID
-            ).first()
-            
-            if not enrollment:
-                enrollment = StudentCourse(
-                    student_id=student.id,  # Correct foreign key reference
-                    course_id=courseID
-                )
-                db.add(enrollment)
-
-            # 3. Find or create group
-            group_key = (coursecode, df["Group Number"][i], courseID)
-            if group_key in group_cache:
-                group = group_cache[group_key]
-            else:
-                group = db.query(Group).filter_by(
-                    courseCode=coursecode,
-                    groupNumber=df["Group Number"][i],
-                    courseID=courseID
-                ).first()
-                
-                if not group:
-                    group = Group(
-                        courseCode=coursecode,
-                        groupNumber=df["Group Number"][i],
-                        courseID=courseID
-                    )
-                    db.add(group)
-                    db.flush()  # Generate group ID without commit
-                
-                group_cache[group_key] = group
-
-            # 4. Create student-group association
-            student_group = db.query(StudentGroup).filter_by(
-                student_id=student.id,
-                group_id=group.id
-            ).first()
-            
-            if not student_group:
-                student_group = StudentGroup(
-                    student_id=student.id,
-                    group_id=group.id
-                )
-                db.add(student_group)
-            
-            created_count += 1
-
-        db.commit()
-    except IntegrityError as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=f"Database integrity error: {str(e)}"
-        )
-    except (KeyError, TypeError) as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid row data: {str(e)}"
-        )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing CSV: {str(e)}"
-        )
-        
-    return {
-        "status": "success",
-        "filename": file.filename,
-        "created_count": created_count,
-        "total_rows": len(df)
-    }
-</file>
-
 <file path="backend/routers/courses.py">
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
 from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
@@ -9322,85 +9127,29 @@ async def getUserByAuth0(auth0_sub: str, db: Session = Depends(get_db)):
     }
 </file>
 
-<file path="frontend/src/app/api/axiosClient.ts">
-import axios from "axios";
-import { env } from "process";
+<file path="frontend/src/app/authRedirect/authlogic.ts">
+import { User } from "lucide-react";
 
-
-const AxiosClient = axios.create({
-  baseURL: "http://127.0.0.1:8080", // Your API base URL
-  timeout: 10000, // Optional: set timeout
-});
-
-
-AxiosClient.interceptors.request.use(
-  (config) => {
-    // Get token from localStorage, Redux store, or context
-    const token = localStorage.getItem('authToken');
-    
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
-
-export default AxiosClient;
-</file>
-
-<file path="frontend/src/app/instructor/course/[courseID]/CoursePageClient.tsx">
-'use client';
-
-import { useState, useEffect } from "react";
-import { columns, StudentData } from "./columns";
-import { DataTable } from "./studentTable";
-
-interface Props {
-  courseId: number;
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  auth0_id?: string;
+  role: string;
 }
 
-const CoursePageClient =  ({ courseId }: Props) => {
-  const [studentsInCourse, setStudentsInCourse] = useState<StudentData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  //Get group number of student in student_group with group_id == groups
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const response = await fetch(`http://127.0.0.1:8080/course/students?courseID=${courseId}`);
-        if (!response.ok) throw new Error("Failed to fetch students");
-        const data = await response.json();
+export class AuthService{
+    async getUserRole(sub: string): Promise<string | null>{
+        const key: string = process.env.DEV;
+        const response = await fetch(`${key}/users/by-auth0/${sub}`);
+        const result: User = await response.json();
 
-
-        setStudentsInCourse(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, [courseId]);
-
-  if (loading) return <p>Loading...</p>;
-  if (error) return <p>Course Error: {error}</p>;
-
-  return (
-    <div className="container mx-auto py-10">
-      <DataTable columns={columns} data={studentsInCourse} />
-    </div>
-  );
-};
-
-export default CoursePageClient;
+        return result.role;
+    }
+}
 </file>
 
-<file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
+<file path="frontend/src/app/instructor/course/[courseID]/[groupID]/GroupStudentClient.tsx">
 "use client";
 import { useState, useEffect } from "react";
 import {
@@ -9412,121 +9161,113 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { useAuth0 } from "@auth0/auth0-react";
+
 import { useUser } from "@/providers/user-provider";
-import { useRouter, usePathname } from 'next/navigation'
-import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
+import { useRouter, usePathname  } from 'next/navigation'
+import { Group } from "next/dist/shared/lib/router/utils/route-regex";
 
-interface GroupData {
-  courseCode: string;
-  courseID: string;  // Consider renaming to courseId for consistency
-  groupNumber: number;
-  id: number;
+
+interface StudentData{
+    email: string;
+    id: number;
+    student_id: number;
+    firstname: string;
+    utorid: number;
+    name: string;
+    lastname: string;
 }
 
-type GroupsProps = {
-  courseId: number;
-};
-
-const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
-  const url = new URL("http://127.0.0.1:8080/group/getgroups");
-  url.searchParams.append('courseID', courseID.toString());
-  
-  const response = await fetch(url, { method: "GET" });
-  return await response.json();
+interface Props{
+  groupID: number;
 }
 
-const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
-  const { user } = useUser();
-  const [groups, setGroups] = useState<GroupData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const router: AppRouterInstance = useRouter();
-  const pathname: string = usePathname();
 
-  useEffect(() => {
-    //if (!user?.id) return;
-    
-    const loadData = async () => {
-      try {
-        const groupdata = await fetchGroups(courseId);
-        setGroups(groupdata);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load groups");
-      } finally {
-        setLoading(false);
-      }
-    };
+const fetchGroups = async (groupID: number): Promise<StudentData[]> => {
+    const url: URL = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/groups/");
+    url.searchParams.append('groupID', groupID.toString());
 
-    loadData();
-  }, [user?.id, courseId]);  // Added courseId to dependencies
+    const response = await fetch(url, {
+        method: "GET",
+    });
+    const data: StudentData[] = await response.json();
+    return data;
+}
 
-  if (loading) return <div>Loading groups...</div>;
-  if (error) return <div>Error: {error}</div>;
+const GroupStudentClient = ({ groupID } : Props) => {
+    const { user } = useUser();
+    const [students, setStudents] = useState<StudentData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const pathname = usePathname();
 
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-      {groups.length > 0 ? (
-        groups.map((group) => (
-          <Card key={group.id} className="hover:shadow-lg transition-shadow">
-            <button 
-              type="button" 
-              onClick={() => router.push(`${pathname}/${group.id}`)}
-              className="w-full text-left"
-            >
-              <CardHeader>
-                <CardTitle>{group.courseCode}</CardTitle>
-                <CardDescription>Group: {group.groupNumber}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p>Course ID: {group.courseID}</p>
-              </CardContent>
-              <CardFooter>
-                <p>Group ID: {group.id}</p>
-              </CardFooter>
-            </button>
-          </Card>
-        ))
-      ) : (
-        <div className="text-gray-500">
-          No groups found for course ID: {courseId}
+    const router = useRouter();
+
+    useEffect(() => {
+        if (!user?.id) return;
+        const lecturerId = user.id;
+        const loadData = async () => {
+            try {
+                if (!user){
+                    throw new Error("Uh Oh");
+                }
+                
+                const studentdata: StudentData[] = await fetchGroups(groupID); 
+                setStudents(studentdata);
+                
+                
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load students in group");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, [user?.id]);
+
+    if (loading) return <div>Loading students in group...</div>;
+    if (error) return <div>Error: {error}</div>;
+
+
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {students.length > 0 ? (
+                students.map((student) => (
+                    
+                    
+                        <Card key={`${student.id}`} className="hover:shadow-lg transition-shadow">
+                        
+                        <CardHeader>
+                            <CardTitle>{student.name}</CardTitle>
+                            <CardDescription>Group: {groupID}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                {student.email}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>{student.utorid}</p>
+                        </CardFooter>
+                        
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No groups found for this course, ID = {groupID}</div>
+            )}
         </div>
-      )}
-    </div>
-  );
+    );
+    
+    
+
 }
 
-export default Groups;
-</file>
-
-<file path="frontend/src/app/instructor/course/[courseID]/page.tsx">
-import Dashboard from '@/components/ui/Dashboard';
-import CoursePageClient from './CoursePageClient';
-import Groups from './GroupClient';
-import RefreshButton from '@/components/refreshbutton';
-
-interface CoursePageProps {
-  params: {
-    courseID: string;
-  };
-}
-
-const CoursePage = async ({ params }: CoursePageProps) => {
-  // Await the params before using them
-  const { courseID } = await params;
-  
-  // Convert to number if needed
-  const numericCourseId = parseInt(courseID);
-
-  return (
-    <div>
-      <Groups courseId={numericCourseId}/>
-      <CoursePageClient courseId={numericCourseId} />
-      <Dashboard courseID={numericCourseId}/>
-    </div>
-  );
-};
-
-export default CoursePage;
+export default GroupStudentClient;
 </file>
 
 <file path="frontend/src/app/layout.tsx">
@@ -9565,186 +9306,115 @@ export default function RootLayout({
 }
 </file>
 
-<file path="frontend/src/app/student/studentlogic.ts">
-import AxiosClient from "../api/axiosClient"; 
-
-export interface Group{
-    id: number;
-    courseCode: string;
-    groupNumber: number;
-    courseID: number;
-}
-
-export interface Student{
-    id: number;
-    name: string;
-    email: string;
-    fname: string;
-    lname: string;
-}
-
-export interface SurveyInstance{
-    evaluator_id: number;
-    question_id: string;
-    evaluatee_id: number;
-    group_id: number;
-    course_id: number;
-    course_code: string;
-    answer: number;
-}
-
-export class StudentService{
-
-
-    async getGroups(studentID: number): Promise<Group[] | null>{
-
-        try {
-            const response = await AxiosClient.get('group/usersgroups', {
-                params: { studentID: studentID }
-            });
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching groups:', error);
-            return null;
-        }
-    }
-
-    async getStudentsInGroup(groupID: number){
-        try {
-            
-            const response = await AxiosClient.get('group/groups/', {
-                params: { groupID: groupID }
-            });
-            return response.data;
-        } catch (error) {
-            console.error('Error fetching students in group:', error);
-            return null;
-        }
-    }
-
-    async getStudentID(email: string){
-        try {
-            console.log("email: ", email);
-            const response = await AxiosClient.get('/users/studentid', {
-                params: { email: email }
-            });
-            return response.data;
-        } catch(error){
-            // Type guard to safely access error properties
-            if (error instanceof Error) {
-                console.error('Error message:', error.message);
-            }
-            
-            // For axios errors specifically
-            if (error && typeof error === 'object' && 'response' in error) {
-                const axiosError = error as any; // or import AxiosError type
-                console.error('Axios error:', axiosError.response?.status, axiosError.response?.data);
-            }
-            
-            console.error('Could not get the student ID from the specified email', error);
-            return null;
-        }
-    }
-
-    async postSurveyInstance(payload: SurveyInstance){
-        try {
-            console.log('Posting survey payload:', payload);
-            console.log('Request URL:', 'group/postsurvey');
-            
-            const response = await AxiosClient.post('group/postsurvey', payload);
-            console.log('Survey post successful:', response.data);
-            return response.data;
-        } catch(error){
-            // Enhanced error logging like your getStudentID method
-            if (error instanceof Error) {
-                console.error('Error message:', error.message);
-            }
-            
-            if (error && typeof error === 'object' && 'response' in error) {
-                const axiosError = error as any;
-                console.error('Axios error details:', {
-                    status: axiosError.response?.status,
-                    statusText: axiosError.response?.statusText,
-                    data: axiosError.response?.data,
-                    url: axiosError.config?.url,
-                    method: axiosError.config?.method,
-                    payload: axiosError.config?.data
-                });
-            } else if (error && typeof error === 'object' && 'request' in error) {
-                console.error('Network error - no response received:', error);
-            }
-            
-            console.error('Error posting survey:', error);
-            throw error;
-        }
-    }
-}
-
-export const studentService = new StudentService();
-</file>
-
-<file path="frontend/src/components/app-sidebar.tsx">
+<file path="frontend/src/components/file-drop.tsx">
 "use client";
 
-import { Calendar, Home, Inbox, Search, Settings } from "lucide-react"
-import FileDrop from "./file-drop"
-import LoginButton from "./loginbutton";
-import LogoutButton from "./logoutbutton";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-} from "@/components/ui/sidebar"
+import { useState, ChangeEvent, FormEvent } from "react";
+import { instructorService } from "@/app/instructor/instructorlogic";
+import { Button } from "./ui/button";
+import { Alert, AlertDescription } from "./ui/alert"; 
+import { Upload } from "lucide-react";
 
-// Menu items.
-const items = [
-  {
-    title: "Home",
-    url: "/instructor",
-    icon: Home,
-  },
-  // {
-  //   title: "Import CSV",
-  //   url: "#",
-  //   icon: Inbox,
-  // },
-  
-]
+const FileDrop = () => {
+    const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [isUploading, setIsUploading] = useState<boolean>(false);
 
-export function AppSidebar() {
-  return (
-    <Sidebar>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Peer Assessment</SidebarGroupLabel>
-          <SidebarGroupLabel>Welcome back</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {items.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
-                    <a href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-              <FileDrop/>
-              <LoginButton/>
-              <LogoutButton/>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-    </Sidebar>
-  )
-}
+    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+
+        if (!selectedFile) {
+            setError("Please select a file first");
+            return;
+        }
+
+        setIsUploading(true);
+        setError(null);
+
+        try {
+            // Use your instructorService uploadCSV method
+            const result = await instructorService.uploadCSV(
+                selectedFile,
+                "2",        // courseId
+                "STAC67"       // courseCode - you might want to make this dynamic
+            );
+
+            if (result) {
+                console.log("Upload successful:", result);
+                // Optional: reset form
+                setSelectedFile(null);
+                // Reset file input
+                const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+                if (fileInput) fileInput.value = '';
+            } else {
+                // uploadCSV returns null on error
+                setError("Upload failed - please try again");
+            }
+            
+        } catch (error: unknown) {
+            const message = error instanceof Error 
+                ? error.message 
+                : "An unknown error occurred";
+            console.error(`Upload error: ${message}`);
+            setError(message);
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+        setError(null);
+        const files = e.target.files;
+        
+        if (files && files.length > 0) {
+            setSelectedFile(files[0]);
+        } else {
+            setSelectedFile(null);
+        }
+    };
+
+    return (
+        <div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex-col items-center gap-4">
+                <input
+                    type="file"
+                    accept=".csv"
+                    onChange={handleFileChange}
+                    className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                <Button 
+                    type="submit" 
+                    disabled={isUploading || !selectedFile}
+                    className="flex items-center gap-2"
+                >
+                    {isUploading ? (
+                        <>
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            Uploading...
+                        </>
+                    ) : (
+                        <>
+                            <Upload className="h-4 w-4" />
+                            Upload CSV
+                        </>
+                    )}
+                </Button>
+            </div>
+        </form>
+        
+        {error && (
+            <Alert variant="destructive" className="mt-4">
+                <AlertDescription>
+                    Error: {error}
+                </AlertDescription>
+            </Alert>
+        )}
+</div>
+    );
+};
+
+export default FileDrop;
 </file>
 
 <file path="frontend/src/components/TableSurvey.tsx">
@@ -10071,75 +9741,6 @@ export function AppSidebar() {
 // export default SurveyTable;
 </file>
 
-<file path="frontend/src/components/ui/Dashboard.tsx">
-'use client'
-
-import { useEffect, useState } from "react"
-import { instructorService } from "@/app/instructor/instructorlogic";
-import { useUser } from "@/providers/user-provider";
-import { Student } from "@/app/student/studentlogic";
-import Factortable from "./FactorTable";
-import ExportCSV from "./ExportCSV";
-import RefreshButton from "../refreshbutton";
-
-// "student_id": 1004985643,
-//             "name": "Yuening Chen",
-//             "factorWithSelf": 1.0,
-//             "factorWithoutSelf": 1.0
-
-interface DashboardProps{
-    courseID: number;
-}
-
-interface AdjustmentFactorTableProps {
-    name: string;
-    student_id: number;
-    factorWithSelf: number;
-    factorWithoutSelf: number;
-    courseCode: string;
-    groupNumber: number;
-    courseID: number;
-}
-
-export interface StudentFactors{
-    name: string;
-    utorid: number;
-    factorWithSelf: number;
-    factorWithoutSelf: number;
-    courseCode: string;
-    groupNumber: number;
-    courseID: number;
-}
-
-const Dashboard = (params: DashboardProps) => {
-    const { user } = useUser();
-    const [students, setStudents] = useState<Student[]>([]);
-    const [studentFactors, setStudentFactors] = useState<StudentFactors[]>([]);
-
-    useEffect(() => {
-        if (!user?.id) return; 
-        
-        const fetchData = async () => {
-            const factorData : StudentFactors[] = await instructorService.getStudentFactors(params.courseID);
-            setStudentFactors(factorData);
-        }
-        fetchData();
-
-    }, [user?.id, params.courseID])
-
-    return(
-        <div>
-            <ExportCSV courseID={params.courseID}/>
-            <RefreshButton courseID={params.courseID}/>
-            <Factortable data={studentFactors}/>
-
-        </div>
-    );
-}
-
-export default Dashboard;
-</file>
-
 <file path="frontend/src/components/ui/FactorTable.tsx">
 'use client'
 import {
@@ -10233,119 +9834,385 @@ const FactorTable = (params: Props) => {
 export default FactorTable;
 </file>
 
-<file path="frontend/src/app/instructor/page.tsx">
-"use client";
-import { useState, useEffect } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { useAuth0 } from "@auth0/auth0-react";
+<file path="backend/routers/api.py">
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form, Body, Request, Header, Query
+from models import SessionLocal, User, Course, Group, Student, StudentGroup, StudentCourse
+from io import BytesIO
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
-import { useUser } from "@/providers/user-provider";
-import { useRouter } from 'next/navigation'
-import RefreshButton from "@/components/refreshbutton";
+from starlette.concurrency import run_in_threadpool
+import pandas as pd
+from schemas import StudentCreate
+
+router = APIRouter();
 
 
-interface CourseData{
-    code: string;
-    session: string;
-    lecturer_id: number;
-    id: number;
-}
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
-const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
-    const response = await fetch("http://127.0.0.1:8080/api/courses", {
-        method: "GET",
-        headers: {
-            'instructorID': lecturer_id.toString()
-        }
-    });
-    const data = await response.json();
-    console.log(data);
-    return data;
-}
+@router.get("/verifyemail")
+async def verifyEmail(email: str = Query(...), db: Session = Depends(get_db)):
+    allowed_email = db.query(Student).filter(Student.email == email).first();
+    if not allowed_email:
+        raise HTTPException(status_code=400, detail="Email not authorized")
+    return {"allowed": True}
 
-const Instructor = () => {
-    const { user } = useUser();
-    const [courses, setCourses] = useState<CourseData[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+@router.get("/courses")
+async def getCourses(instructor_id: int, db: Session = Depends(get_db)):
+    courses = db.query(Course).filter(Course.lecturer_id == instructor_id).all()
+    return courses
+
+
+@router.post("/csv", response_model=StudentCreate)
+async def saveCSV(
+    file: UploadFile = File(..., description="CSV file containing student data"),
+    courseID: int = Header(..., alias="cid", description="Course ID"),
+    coursecode: str = Header(..., alias="coursecode", description="Course code"),
+    db: Session = Depends(get_db)
+):
+    contents = await file.read()
+    file_stream = BytesIO(contents)
+    df = await run_in_threadpool(pd.read_csv, file_stream)
+    df = df.astype(object).where(pd.notnull(df), None)
+
+    required_columns = ["ID", "Email", "First Name", "Last Name", "UTORid", "Group Number", "Student Number"]
+    missing = [col for col in required_columns if col not in df.columns]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required columns: {', '.join(missing)}"
+        )
     
-
-
-    const router = useRouter();
-
-    useEffect(() => {
-        if (!user?.id) return;
-        const lecturerId = user.id;
-        const loadData = async () => {
-            try {
-                if (!user){
-                    throw new Error("Uh Oh");
-                }
-                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
-                setCourses(coursedata);
-                
-                
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load courses");
-            } finally {
-                setLoading(false);
+    created_count = 0
+    try:
+        # Pre-cache groups to minimize database queries
+        group_cache = {}
+        
+        for i in range(len(df.index)):
+            # 1. Create student if not exists
+            student_data = {
+                "id": df["ID"][i],
+                "email": df["Email"][i],
+                "name": f"{df['First Name'][i]} {df['Last Name'][i]}",
+                "student_id": df["Student Number"][i],
+                "utorid": df["UTORid"][i],
+                "firstname": df["First Name"][i],
+                "lastname": df["Last Name"][i]
             }
-        };
+            
+            student = db.query(Student).filter_by(id=student_data["id"]).first()
+            if not student:
+                student = Student(**student_data)
+                db.add(student)
+                db.flush()  # Assign ID without committing transaction
+            else:
+                # Update existing student if needed
+                for key, value in student_data.items():
+                    setattr(student, key, value)
 
-        loadData();
-    }, [user?.id]);
+            # 2. Create enrollment
+            enrollment = db.query(StudentCourse).filter_by(
+                student_id=student.id,  # Use student.id NOT student.student_id
+                course_id=courseID
+            ).first()
+            
+            if not enrollment:
+                enrollment = StudentCourse(
+                    student_id=student.id,  # Correct foreign key reference
+                    course_id=courseID
+                )
+                db.add(enrollment)
 
-    if (loading) return <div>Loading courses...</div>;
-    if (error) return <div>Error: {error}</div>;
-
-
-
-    return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {courses.length > 0 ? (
-                courses.map((course) => (
-                    
-                    
-                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
-                        <CardHeader>
-                            <CardTitle>{course.code}</CardTitle>
-                            <CardDescription>{course.session} Session</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                Lecturer ID: {course.lecturer_id}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>{course.code}</p>
-                        </CardFooter>
-                        </button>
-                    
-                    </Card>
-
+            # 3. Find or create group
+            group_key = (coursecode, df["Group Number"][i], courseID)
+            if group_key in group_cache:
+                group = group_cache[group_key]
+            else:
+                group = db.query(Group).filter_by(
+                    courseCode=coursecode,
+                    groupNumber=df["Group Number"][i],
+                    courseID=courseID
+                ).first()
                 
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
-            )}
-        </div>
-    );
-    
-    
+                if not group:
+                    group = Group(
+                        courseCode=coursecode,
+                        groupNumber=df["Group Number"][i],
+                        courseID=courseID
+                    )
+                    db.add(group)
+                    db.flush()  # Generate group ID without commit
+                
+                group_cache[group_key] = group
 
+            # 4. Create student-group association
+            student_group = db.query(StudentGroup).filter_by(
+                student_id=student.id,
+                group_id=group.id
+            ).first()
+            
+            if not student_group:
+                student_group = StudentGroup(
+                    student_id=student.id,
+                    group_id=group.id
+                )
+                db.add(student_group)
+            
+            created_count += 1
+
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Database integrity error: {str(e)}"
+        )
+    except (KeyError, TypeError) as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid row data: {str(e)}"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing CSV: {str(e)}"
+        )
+        
+    return {
+        "status": "success",
+        "filename": file.filename,
+        "created_count": created_count,
+        "total_rows": len(df)
+    }
+</file>
+
+<file path="frontend/src/app/api/axiosClient.ts">
+import axios from "axios";
+
+const AxiosClient = axios.create({
+  baseURL: "http://127.0.0.1:8080", 
+  timeout: 10000,
+});
+
+AxiosClient.interceptors.request.use(
+  (config) => {
+    // Get token from localStorage, Redux store, or context
+    const token = localStorage.getItem('authToken');
+    
+    if (token) {
+      // Ensure headers object exists and preserve existing headers
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    
+    console.log('Final headers being sent:', JSON.stringify(config.headers, null, 2));
+    console.log('Request URL:', config.url);
+    console.log('Request method:', config.method);
+    
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+export default AxiosClient;
+</file>
+
+<file path="frontend/src/app/instructor/course/[courseID]/CoursePageClient.tsx">
+'use client';
+
+import { useState, useEffect } from "react";
+import { columns, StudentData } from "./columns";
+import { DataTable } from "./studentTable";
+
+interface Props {
+  courseId: number;
 }
 
-export default Instructor;
+const CoursePageClient =  ({ courseId }: Props) => {
+  const [studentsInCourse, setStudentsInCourse] = useState<StudentData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  //Get group number of student in student_group with group_id == groups
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const response = await fetch(`https://peer-backend-1014214808131.us-central1.run.app/course/students?courseID=${courseId}`);
+        if (!response.ok) throw new Error("Failed to fetch students");
+        const data = await response.json();
+
+
+        setStudentsInCourse(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [courseId]);
+
+  if (loading) return <p>Loading...</p>;
+  if (error) return <p>Course Error: {error}</p>;
+
+  return (
+    <div className="container mx-auto py-10">
+      <DataTable columns={columns} data={studentsInCourse} />
+    </div>
+  );
+};
+
+export default CoursePageClient;
+</file>
+
+<file path="frontend/src/app/instructor/instructorlogic.ts">
+import { group } from "console";
+import AxiosClient from "../api/axiosClient"; 
+import { AxiosError } from "axios";
+
+export class InstructorService{
+
+    async getCourses(lecturer_id: number){
+        try {
+            console.log("lecturer_id: ", lecturer_id)
+            const response = await AxiosClient.get("api/courses", {
+                params: {
+                    instructor_id: lecturer_id
+                }
+            });
+            return response.data;
+
+        } catch(error){
+            console.error('Could not get courses for specified instructor', error);
+            return null;
+        }
+        
+    }
+
+    async getStudents(groupID: number){
+        try{
+            const response = await AxiosClient.get("/group/groups/", {
+                params: {
+                    groupID: groupID
+                }
+            });
+            return response.data;
+        } catch(error){
+            console.error('Could not get the students in the specified group', error);
+            return null;
+        }
+    }
+    async refreshStudentFactors(courseID: number): Promise<any> {
+        try {
+            // Send courseID as query parameter to match FastAPI endpoint
+            const response = await AxiosClient.post("/factor/refreshFactors", null, {
+                params: {
+                    courseID: courseID
+                }
+            });
+            return response.data;
+        } catch (error: unknown) {
+            console.error('Could not refresh the factors for groups in the course', error);
+            
+            // Type guard to check if error is an Axios error
+            if (error && typeof error === 'object' && 'response' in error) {
+                const axiosError = error as any;
+                console.error('Error response:', axiosError.response?.data);
+                console.error('Error status:', axiosError.response?.status);
+            } else if (error instanceof Error) {
+                console.error('Error message:', error.message);
+            } else {
+                console.error('Unknown error type:', error);
+            }
+            
+            return null;
+        }
+    }
+    async getStudentFactors(courseID: number){
+        try{
+            const response = await AxiosClient.get("/factor/fetchFactors", {
+                params: {
+                    courseID: courseID,
+                }
+            });
+            return response.data;
+        } catch(error){
+            console.error('Could not get the factor for the specified student', error);
+            return null;
+
+        }
+    }
+
+    async downloadCSV(courseID: number){
+        try{
+            const response = await AxiosClient.get("/factor/makeCSV", {
+                params: {
+                    courseID: courseID,
+                },
+                responseType: 'blob'
+            });
+            const blob = new Blob([response.data], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `course_${courseID}_students.csv`;
+            document.body.appendChild(link);
+            link.click();
+            
+            // Cleanup
+            link.remove();
+            URL.revokeObjectURL(url);
+            
+            return { success: true };
+        } catch(error){
+            console.error('Could not download the csv file', error);
+            return null;
+        }
+    }
+
+    async uploadCSV(file: File, courseId: string, courseCode: string) {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        console.log('=== UPLOAD CSV DEBUG ===');
+        console.log('courseId:', courseId);
+        console.log('courseCode:', courseCode);
+        
+        try {
+            const response = await AxiosClient.post("/api/csv", formData, {
+                headers: {
+                    'cid': courseId,
+                    'coursecode': courseCode,
+                    // Don't set Content-Type - let browser handle FormData
+                },
+                // Ensure transformRequest doesn't interfere
+                transformRequest: [(data) => data],
+            });
+            return response.data;
+        } catch(error) {
+            if (error instanceof AxiosError) {
+                console.error('Upload error details:', error.response?.data);
+                console.error('Request config headers:', error.config?.headers);
+            }
+            console.error('Could not upload the csv file', error);
+            return null;
+        }
+    }
+}
+
+
+export const instructorService = new InstructorService();
 </file>
 
 <file path="frontend/src/app/page.tsx">
@@ -10376,6 +10243,257 @@ export default function Home() {
 }
 </file>
 
+<file path="frontend/src/app/student/studentlogic.ts">
+import AxiosClient from "../api/axiosClient"; 
+
+export interface Group{
+    id: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
+}
+
+export interface Student{
+    id: number;
+    name: string;
+    email: string;
+    fname: string;
+    lname: string;
+}
+
+export interface SurveyInstance{
+    evaluator_id: number;
+    question_id: string;
+    evaluatee_id: number;
+    group_id: number;
+    course_id: number;
+    course_code: string;
+    answer: number;
+}
+
+export class StudentService{
+
+
+    async getGroups(studentID: number): Promise<Group[] | null>{
+
+        try {
+            const response = await AxiosClient.get('group/usersgroups', {
+                params: { studentID: studentID }
+            });
+            return response.data;
+        } catch (error) {
+            console.error('Error fetching groups:', error);
+            return null;
+        }
+    }
+
+    async getStudentsInGroup(groupID: number){
+        try {
+            
+            const response = await AxiosClient.get('group/groups/', {
+                params: { groupID: groupID }
+            });
+            return response.data;
+        } catch (error) {
+            console.error('Error fetching students in group:', error);
+            return null;
+        }
+    }
+
+    async getStudentID(email: string){
+        try {
+            console.log("email: ", email);
+            const response = await AxiosClient.get('/users/studentid', {
+                params: { email: email }
+            });
+            return response.data;
+        } catch(error){
+            // Type guard to safely access error properties
+            if (error instanceof Error) {
+                console.error('Error message:', error.message);
+            }
+            
+            // For axios errors specifically
+            if (error && typeof error === 'object' && 'response' in error) {
+                const axiosError = error as any; // or import AxiosError type
+                console.error('Axios error:', axiosError.response?.status, axiosError.response?.data);
+            }
+            
+            console.error('Could not get the student ID from the specified email', error);
+            return null;
+        }
+    }
+
+    async postSurveyInstance(payload: SurveyInstance){
+        try {
+            console.log('Posting survey payload:', payload);
+            console.log('Request URL:', 'group/postsurvey');
+            
+            const response = await AxiosClient.post('group/postsurvey', payload);
+            console.log('Survey post successful:', response.data);
+            return response.data;
+        } catch(error){
+            // Enhanced error logging like your getStudentID method
+            if (error instanceof Error) {
+                console.error('Error message:', error.message);
+            }
+            
+            if (error && typeof error === 'object' && 'response' in error) {
+                const axiosError = error as any;
+                console.error('Axios error details:', {
+                    status: axiosError.response?.status,
+                    statusText: axiosError.response?.statusText,
+                    data: axiosError.response?.data,
+                    url: axiosError.config?.url,
+                    method: axiosError.config?.method,
+                    payload: axiosError.config?.data
+                });
+            } else if (error && typeof error === 'object' && 'request' in error) {
+                console.error('Network error - no response received:', error);
+            }
+            
+            console.error('Error posting survey:', error);
+            throw error;
+        }
+    }
+}
+
+export const studentService = new StudentService();
+</file>
+
+<file path="frontend/src/components/app-sidebar.tsx">
+"use client";
+
+import { Calendar, Home, Inbox, Search, Settings } from "lucide-react"
+import FileDrop from "./file-drop"
+import LoginButton from "./loginbutton";
+import LogoutButton from "./logoutbutton";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar"
+
+// Menu items.
+const items = [
+  {
+    title: "Home",
+    url: "/",
+    icon: Home,
+  },
+  // {
+  //   title: "Import CSV",
+  //   url: "#",
+  //   icon: Inbox,
+  // },
+  
+]
+
+export function AppSidebar() {
+  return (
+    <Sidebar>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Peer Assessment</SidebarGroupLabel>
+          <SidebarGroupLabel>Welcome back</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {items.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton asChild>
+                    <a href={item.url}>
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </a>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+              <FileDrop/>
+              <LoginButton/>
+              <LogoutButton/>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
+  )
+}
+</file>
+
+<file path="frontend/src/components/ui/Dashboard.tsx">
+'use client'
+
+import { useEffect, useState } from "react"
+import { instructorService } from "@/app/instructor/instructorlogic";
+import { useUser } from "@/providers/user-provider";
+import { Student } from "@/app/student/studentlogic";
+import Factortable from "./FactorTable";
+import ExportCSV from "./ExportCSV";
+import RefreshButton from "../refreshbutton";
+
+// "student_id": 1004985643,
+//             "name": "Yuening Chen",
+//             "factorWithSelf": 1.0,
+//             "factorWithoutSelf": 1.0
+
+interface DashboardProps{
+    courseID: number;
+}
+
+interface AdjustmentFactorTableProps {
+    name: string;
+    student_id: number;
+    factorWithSelf: number;
+    factorWithoutSelf: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
+}
+
+export interface StudentFactors{
+    name: string;
+    utorid: number;
+    factorWithSelf: number;
+    factorWithoutSelf: number;
+    courseCode: string;
+    groupNumber: number;
+    courseID: number;
+}
+
+const Dashboard = (params: DashboardProps) => {
+    const { user } = useUser();
+    const [students, setStudents] = useState<Student[]>([]);
+    const [studentFactors, setStudentFactors] = useState<StudentFactors[]>([]);
+
+    useEffect(() => {
+        if (!user?.id) return; 
+        
+        const fetchData = async () => {
+            const factorData : StudentFactors[] = await instructorService.getStudentFactors(params.courseID);
+            setStudentFactors(factorData);
+        }
+        fetchData();
+
+    }, [user?.id, params.courseID])
+
+    return(
+        <div>
+            <ExportCSV courseID={params.courseID}/>
+            <RefreshButton courseID={params.courseID}/>
+            <Factortable data={studentFactors}/>
+
+        </div>
+    );
+}
+
+export default Dashboard;
+</file>
+
 <file path="frontend/src/providers/user-sync.tsx">
 // src/providers/user-sync.tsx
 'use client';
@@ -10393,7 +10511,7 @@ export default function UserSync({ children }: { children: React.ReactNode }) {
       try {
         const token = await getAccessTokenSilently();
         
-        await fetch("http://127.0.0.1:8080/users", {
+        await fetch("https://peer-backend-1014214808131.us-central1.run.app/users", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -10471,139 +10589,133 @@ export default async function CoursePage({ params }: CoursePageProps) {
 }
 </file>
 
-<file path="frontend/src/app/student/page.tsx">
+<file path="frontend/src/app/instructor/course/[courseID]/GroupClient.tsx">
 "use client";
-
+import { useState, useEffect } from "react";
 import {
   Card,
-  CardAction,
   CardContent,
   CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-
-import { StudentService, Group } from "./studentlogic";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
-import { group } from "console";
 import { useUser } from "@/providers/user-provider";
+import { useRouter, usePathname } from 'next/navigation'
+import { AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
 
-const Student = () => {
-  const { user, isAuthenticated, isLoading } = useAuth0();
-  const user1 = useUser();
-  const router = useRouter();
-  const [ studentServiceInstance ] = useState(() => new StudentService());
+interface GroupData {
+  courseCode: string;
+  courseID: string;  // Consider renaming to courseId for consistency
+  groupNumber: number;
+  id: number;
+}
 
-  const [groups, setGroups] = useState<Group[]>([]);
+type GroupsProps = {
+  courseId: number;
+};
 
-  //get groups and set them
-  useEffect(()=> {
-    const fetchGroups = async () => {
-      if (isAuthenticated && user?.sub && user1.user){
-        const response = await studentServiceInstance.getGroups(user1.user.id || 123456);
-        
-        if (response){
-          setGroups(response);
-        } 
-      
+const fetchGroups = async (courseID: number): Promise<GroupData[]> => {
+  const url = new URL("https://peer-backend-1014214808131.us-central1.run.app/group/getgroups/");
+  url.searchParams.append('courseID', courseID.toString());
+  
+  const response = await fetch(url, { method: "GET" });
+  return await response.json();
+}
+
+const Groups = ({ courseId }: GroupsProps) => {  // Fixed props destructuring
+  const { user } = useUser();
+  const [groups, setGroups] = useState<GroupData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const router: AppRouterInstance = useRouter();
+  const pathname: string = usePathname();
+
+  useEffect(() => {
+    //if (!user?.id) return;
+    
+    const loadData = async () => {
+      try {
+        const groupdata = await fetchGroups(courseId);
+        setGroups(groupdata);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load groups");
+      } finally {
+        setLoading(false);
       }
     };
-    if (isAuthenticated && user?.sub) {
-      fetchGroups();
-    }
 
-    
-    
+    loadData();
+  }, [user?.id, courseId]);  // Added courseId to dependencies
 
-  }, [isAuthenticated, user?.sub, studentServiceInstance, user1.user?.id])
+  if (loading) return <div>Loading groups...</div>;
+  if (error) return <div>Error: {error}</div>;
+
   return (
-    <div className="p-4">
-      <h2 className="text-lg font-semibold mb-6">
-        You have the following surveys to complete:
-      </h2>
-
-       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {groups.length > 0 ? (
-                groups.map((group) => (
-                    
-                    
-                        <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
-                        <button type="button" onClick={() => router.push(`student/survey/${group.id}/${group.courseID}/${group.courseCode}`)}>
-                        <CardHeader>
-                            <CardTitle>{group.courseCode}</CardTitle>
-                            <CardDescription>Group {group.groupNumber} </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-sm text-gray-600">
-                                Group ID: {group.id}
-                            </p>
-                        </CardContent>
-                        <CardFooter>
-                            <p>Begin Survey</p>
-                        </CardFooter>
-                        </button>
-                    
-                    </Card>
-
-                
-                    
-                ))
-            ) : (
-                <div className="text-gray-500">No groups found for this student, ID = {user?.id}</div>
-            )}
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+      {groups.length > 0 ? (
+        groups.map((group) => (
+          <Card key={group.id} className="hover:shadow-lg transition-shadow">
+            <button 
+              type="button" 
+              onClick={() => router.push(`${pathname}/${group.id}`)}
+              className="w-full text-left"
+            >
+              <CardHeader>
+                <CardTitle>{group.courseCode}</CardTitle>
+                <CardDescription>Group: {group.groupNumber}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p>Course ID: {group.courseID}</p>
+              </CardContent>
+              <CardFooter>
+                <p>Group ID: {group.id}</p>
+              </CardFooter>
+            </button>
+          </Card>
+        ))
+      ) : (
+        <div className="text-gray-500">
+          No groups found for course ID: {courseId}
         </div>
+      )}
+    </div>
+  );
+}
 
-      
+export default Groups;
+</file>
 
-      
-      
-      {/* <div className="flex flex-col md:flex-row gap-6 md:gap-8 justify-between p-4">
-        <button type="button" onClick={() => router.push(`student/course/`)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>STAC67</CardTitle>
-            <CardDescription>Group 2</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Regression Analysis</p>
-          </CardContent>
-        </Card>
-        </button>
+<file path="frontend/src/app/instructor/course/[courseID]/page.tsx">
+import Dashboard from '@/components/ui/Dashboard';
+import CoursePageClient from './CoursePageClient';
+import Groups from './GroupClient';
+import RefreshButton from '@/components/refreshbutton';
 
+interface CoursePageProps {
+  params: Promise<{
+    courseID: string;
+  }>;
+}
 
-        <button type="button" onClick={() => router.push(``)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>CSCC01</CardTitle>
-            <CardDescription>Group: 4</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Intro to Software Engineering</p>
-          </CardContent>
-        </Card>
-        </button>
+const CoursePage = async ({ params }: CoursePageProps) => {
+  // Await the params before using them
+  const { courseID } = await params;
+  
+  // Convert to number if needed
+  const numericCourseId = parseInt(courseID);
 
-        <button type="button" onClick={() => router.push(``)}>
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>CSCC01</CardTitle>
-            <CardDescription>Group: 4</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p>Intro to Software Engineering</p>
-          </CardContent>
-        </Card>
-        </button>
-
-      </div> */}
+  return (
+    <div>
+      <Groups courseId={numericCourseId}/>
+      <CoursePageClient courseId={numericCourseId} />
+      <Dashboard courseID={numericCourseId}/>
     </div>
   );
 };
 
-export default Student;
+export default CoursePage;
 </file>
 
 <file path="frontend/src/components/ui/Survey.tsx">
@@ -11152,6 +11264,210 @@ async def postSurveyInstance(surveyResponse: StudentSurveyBase, db: Session = De
 }
 </file>
 
+<file path="frontend/src/app/instructor/page.tsx">
+"use client";
+import { useState, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { useAuth0 } from "@auth0/auth0-react";
+
+import { useUser } from "@/providers/user-provider";
+import { useRouter } from 'next/navigation'
+import RefreshButton from "@/components/refreshbutton";
+import { instructorService } from "./instructorlogic";
+
+
+interface CourseData{
+    code: string;
+    session: string;
+    lecturer_id: number;
+    id: number;
+}
+
+
+const fetchCourses = async (lecturer_id: number): Promise<CourseData[]> => {
+    const data = await instructorService.getCourses(lecturer_id);
+    console.log(data);
+    return data;
+}
+
+const Instructor = () => {
+    const { user } = useUser();
+    const [courses, setCourses] = useState<CourseData[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    
+
+
+    const router = useRouter();
+
+    useEffect(() => {
+        if (!user?.id) return;
+        const lecturerId = user.id;
+        console.log(lecturerId);
+        const loadData = async () => {
+            try {
+                if (!user){
+                    throw new Error("Uh Oh");
+                }
+                const coursedata = await fetchCourses(lecturerId); // Hardcoded lecturer ID for now
+                setCourses(coursedata);
+                
+                
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load courses");
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
+    }, [user?.id]);
+
+    if (loading) return <div>Loading courses...</div>;
+    if (error) return <div>Error: {error}</div>;
+
+
+
+    return (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {courses.length > 0 ? (
+                courses.map((course) => (
+                    
+                    
+                        <Card key={`${course.code}-${course.session}`} className="hover:shadow-lg transition-shadow">
+                        <button type="button" onClick={() => router.push(`instructor/course/${course.id}`)}>
+                        <CardHeader>
+                            <CardTitle>{course.code}</CardTitle>
+                            <CardDescription>{course.session} Session</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                            <p className="text-sm text-gray-600">
+                                Lecturer ID: {course.lecturer_id}
+                            </p>
+                        </CardContent>
+                        <CardFooter>
+                            <p>{course.code}</p>
+                        </CardFooter>
+                        </button>
+                    
+                    </Card>
+
+                
+                    
+                ))
+            ) : (
+                <div className="text-gray-500">No courses found for this instructor, ID = {user?.id}</div>
+            )}
+        </div>
+    );
+    
+    
+
+}
+
+export default Instructor;
+</file>
+
+<file path="frontend/src/app/student/page.tsx">
+"use client";
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+
+import { StudentService, Group } from "./studentlogic";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useUser } from "@/providers/user-provider";
+
+const Student = () => {
+  const { user } = useUser();
+  const router = useRouter();
+  const [studentServiceInstance] = useState(() => new StudentService());
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    
+    const loadData = async () => {
+      try {
+        if (!user) {
+          throw new Error("User not found");
+        }
+        const studentId = await studentServiceInstance.getStudentID(user.email);
+        const groupsData = await studentServiceInstance.getGroups(studentId);
+        
+        if (groupsData) {
+          setGroups(groupsData);
+        } else {
+          setGroups([]);
+        }
+        
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load groups");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [user?.id, studentServiceInstance]);
+
+  if (loading) return <div>Loading surveys...</div>;
+  if (error) return <div>Error: {error}</div>;
+
+  return (
+    <div className="p-4">
+      <h2 className="text-lg font-semibold mb-6">
+        You have the following surveys to complete:
+      </h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+        {groups.length > 0 ? (
+          groups.map((group) => (
+            <Card key={`${group.id}`} className="hover:shadow-lg transition-shadow">
+              <button type="button" onClick={() => router.push(`student/survey/${group.id}/${group.courseID}/${group.courseCode}`)}>
+                <CardHeader>
+                  <CardTitle>{group.courseCode}</CardTitle>
+                  <CardDescription>Group {group.groupNumber}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-gray-600">
+                    Group ID: {group.id}
+                  </p>
+                </CardContent>
+                <CardFooter>
+                  <p>Begin Survey</p>
+                </CardFooter>
+              </button>
+            </Card>
+          ))
+        ) : (
+          <div className="text-gray-500">No groups found for this student, ID = {user?.id}</div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default Student;
+</file>
+
 <file path="frontend/src/providers/user-provider.tsx">
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { useAuth0 } from "@auth0/auth0-react";
@@ -11209,7 +11525,7 @@ export const UserProvider = ({ children }: { children: ReactNode }) => {
         };
         
         console.log("Sync payload:", syncPayload);
-        const syncResponse = await fetch("http://127.0.0.1:8080/users", {
+        const syncResponse = await fetch("https://peer-backend-1014214808131.us-central1.run.app/users", {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

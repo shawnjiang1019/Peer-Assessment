@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 class StudentCreate(BaseModel):
-    name: str
-    email: str
-    id: int
+    status: str
+    filename: str
+    created_count: int
+    total_rows: int

@@ -67,7 +67,7 @@ const FileDrop = () => {
     return (
         <div>
         <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="flex items-center gap-4">
+            <div className="flex-col items-center gap-4">
                 <input
                     type="file"
                     accept=".csv"
